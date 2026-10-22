@@ -6,7 +6,7 @@ import GenerationOverlay from "./GenerationOverlay";
 import type { Picture } from "./library-types";
 
 type ListResult = { images?: Picture[]; nextCursor?: string | null; error?: string };
-type Dialog = "login" | "upload" | "bulk" | "delete" | null;
+type Dialog = "login" | "upload" | "bulk" | "delete" | "edit" | "copy" | null;
 type DialogDestination = Exclude<Dialog, "login" | null>;
 const sectors = ["B&I", "Chartwells", "Compass One", "Levy", "RA", "Ireland"];
 const API_URL = process.env.NEXT_PUBLIC_T2E_API_URL || "";
@@ -39,7 +39,12 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [formError, setFormError] = useState("");
   const [pendingDelete, setPendingDelete] = useState<Picture | null>(null);
+  const [pendingEdit, setPendingEdit] = useState<Picture | null>(null);
+  const [pendingCopy, setPendingCopy] = useState<Picture | null>(null);
+  const [editName, setEditName] = useState("");
+  const [copySectors, setCopySectors] = useState<string[]>([]);
   const [deleting, setDeleting] = useState(false);
+  const [managing, setManaging] = useState(false);
 
   useEffect(() => { void loadImages(); }, []);
 
@@ -104,6 +109,31 @@ export default function Home() {
     setFormError("");
     setAfterLogin("delete");
     setDialog(authenticated ? "delete" : "login");
+  }
+
+  function openEdit(image: Picture) {
+    setPendingEdit(image);
+    setEditName(image.name);
+    setFormError("");
+    setAfterLogin("edit");
+    setDialog(authenticated ? "edit" : "login");
+  }
+
+  function openCopy(image: Picture) {
+    setPendingCopy(image);
+    setCopySectors([]);
+    setFormError("");
+    setAfterLogin("copy");
+    setDialog(authenticated ? "copy" : "login");
+  }
+
+  function closeDialog() {
+    if (uploading || deleting || managing || signingIn) return;
+    setDialog(null);
+    if (dialog === "delete") setPendingDelete(null);
+    if (dialog === "edit") setPendingEdit(null);
+    if (dialog === "copy") setPendingCopy(null);
+    setFormError("");
   }
 
   async function login(event: FormEvent<HTMLFormElement>) {
@@ -172,6 +202,53 @@ export default function Home() {
       setPendingDelete(null); setDialog(null); notify("Image deleted from the library.");
     } catch (error) { setFormError(error instanceof Error ? error.message : "Image deletion failed."); }
     finally { setDeleting(false); }
+  }
+
+  async function saveImageName(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!pendingEdit) return;
+    const nextName = editName.trim();
+    if (nextName.length < 2 || nextName.length > 80) { setFormError("Enter a name between 2 and 80 characters."); return; }
+    setManaging(true); setFormError("");
+    try {
+      const response = await fetch(api("/api/images/manage"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Upload-Password": uploadPassword },
+        body: JSON.stringify({ action: "rename", assetId: pendingEdit.id, publicId: pendingEdit.publicId, name: nextName, plu: pendingEdit.plu, sector: pendingEdit.sector })
+      });
+      const data = await response.json() as { image?: Picture; error?: string };
+      if (!response.ok || !data.image) throw new Error(data.error || "Image name could not be updated.");
+      setImages(current => current.map(image => image.id === pendingEdit.id ? { ...image, name: data.image?.name || nextName } : image));
+      setDialog(null); setPendingEdit(null);
+      notify("Image name updated.");
+    } catch (error) { setFormError(error instanceof Error ? error.message : "Image name could not be updated."); }
+    finally { setManaging(false); }
+  }
+
+  async function copyImageToSectors(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!pendingCopy || copySectors.length === 0) return;
+    setManaging(true); setFormError("");
+    try {
+      const response = await fetch(api("/api/images/manage"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Upload-Password": uploadPassword },
+        body: JSON.stringify({ action: "copy", assetId: pendingCopy.id, publicId: pendingCopy.publicId, sectors: copySectors, name: pendingCopy.name, plu: pendingCopy.plu, sector: pendingCopy.sector })
+      });
+      const data = await response.json() as { images?: Picture[]; failedSectors?: string[]; error?: string };
+      const added = data.images || [];
+      if (added.length) setImages(current => [...added, ...current.filter(image => !added.some(copy => copy.id === image.id))]);
+      if (!response.ok && added.length === 0) throw new Error(data.error || "Image copies could not be created.");
+      const failedSectors = data.failedSectors || [];
+      if (failedSectors.length > 0) {
+        setCopySectors(failedSectors);
+        setFormError(data.error || `Could not copy to ${failedSectors.join(", ")}. Retry the remaining sectors.`);
+        return;
+      }
+      setDialog(null); setPendingCopy(null); setCopySectors([]);
+      notify(`Copied ${pendingCopy.name} to ${added.length} ${added.length === 1 ? "sector" : "sectors"}.`);
+    } catch (error) { setFormError(error instanceof Error ? error.message : "Image copies could not be created."); }
+    finally { setManaging(false); }
   }
 
   async function copyLink(image: Picture) {
@@ -246,6 +323,7 @@ export default function Home() {
                 <div className="image-detail"><span>PLU <b>{image.plu}</b></span><span>{new Date(image.createdAt).toLocaleDateString("en-GB", {day:"numeric",month:"short",year:"numeric"})}</span></div>
                 <div className="file-name" title={image.filename}>{image.filename}</div>
                 <div className="card-actions"><button type="button" className="copy-button" onClick={() => void copyLink(image)}><span aria-hidden="true">↗</span> Copy URL Link <span className="copy-icon" aria-hidden="true">⧉</span></button><button type="button" className="delete-button" onClick={() => openDelete(image)} aria-label={`Delete ${image.name}`}>Delete</button></div>
+                <div className="card-manage-actions"><button type="button" onClick={() => openEdit(image)}>Edit name</button><button type="button" onClick={() => openCopy(image)}>Copy to other sectors</button></div>
               </div>
             </article>)}
           </div> : <div className="empty-state"><div className="empty-icon">▧</div><h3>{images.length ? "No matching images" : "Your image library starts here"}</h3><p>{images.length ? "Try another search or sector." : "Upload your first image to start building the catalogue."}</p><button type="button" className="primary-button" onClick={images.length ? () => { setSearch(""); setActiveSector("All sectors"); } : openUpload}>{images.length ? "Clear filters" : "Upload first image"}</button></div>}
@@ -259,12 +337,12 @@ export default function Home() {
       {toast && <div className="toast" role="status">✓ {toast}</div>}
 
       {dialog === "bulk" && <BulkUploadDialog apiBase={API_URL} uploadPassword={uploadPassword} sectors={sectors} onClose={() => setDialog(null)} onImagesAdded={added => setImages(current => [...added, ...current.filter(image => !added.some(next => next.id === image.id))])} notify={notify} />}
-      {dialog && dialog !== "bulk" && <div className="modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget && !uploading && !deleting) { setDialog(null); if (dialog === "delete") setPendingDelete(null); } }}>
-        <section className="modal" role="dialog" aria-modal="true" aria-label={dialog === "login" ? "Uploader sign in" : dialog === "upload" ? "Add an image" : "Delete an image"}>
-          <button type="button" className="modal-close" disabled={uploading || deleting} onClick={() => { setDialog(null); if (dialog === "delete") setPendingDelete(null); }} aria-label="Close dialog">×</button>
+      {dialog && dialog !== "bulk" && <div className="modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget) closeDialog(); }}>
+        <section className="modal" role="dialog" aria-modal="true" aria-label={dialog === "login" ? "Uploader sign in" : dialog === "upload" ? "Add an image" : dialog === "edit" ? "Edit image name" : dialog === "copy" ? "Copy image to other sectors" : "Delete an image"}>
+          <button type="button" className="modal-close" disabled={uploading || deleting || managing || signingIn} onClick={closeDialog} aria-label="Close dialog">×</button>
           {dialog === "login" ? <form onSubmit={login}>
             <div className="modal-icon">◇</div><div className="section-eyebrow">SECURE ACCESS</div><h2>Uploader sign in</h2>
-            <p className="modal-intro">Enter the uploader password to add images, fill a bulk sheet, or delete a library image. Your password is kept only for this tab session.</p>
+            <p className="modal-intro">Enter the uploader password to add, edit, copy or delete library images, or fill a bulk sheet. Your password is kept only for this tab session.</p>
             <label className="form-label" htmlFor="upload-password">Upload password</label>
             <input id="upload-password" className="field" type="password" value={password} onChange={event => setPassword(event.target.value)} autoFocus required placeholder="Enter your password" />
             {formError && <p className="form-error" role="alert">{formError}</p>}
@@ -294,6 +372,28 @@ export default function Home() {
             {name && plu && sector && <div className="filename-hint">Filename: {name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") + "_" + plu.toLowerCase() + "_" + sector.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") + (creationMode === "generate" || cleanup ? ".webp" : file?.type === "image/png" ? ".png" : file?.type === "image/webp" ? ".webp" : ".jpg")}</div>}
             {formError && <p className="form-error" role="alert">{formError}</p>}
             <div className="modal-actions"><button className="secondary-button" disabled={uploading} type="button" onClick={() => setDialog(null)}>Cancel</button><button className="primary-button" type="submit" disabled={uploading || (creationMode === "upload" && !file) || (creationMode === "generate" && description.trim().length < 3)}>{uploading ? (creationMode === "generate" ? "Generating and uploading..." : cleanup ? "Cleaning and uploading..." : "Uploading...") : creationMode === "generate" ? "Generate image →" : cleanup ? "Clean up & upload →" : "Upload image →"}</button></div>
+          </form> : dialog === "edit" && pendingEdit ? <form onSubmit={saveImageName}>
+            <div className="section-eyebrow">IMAGE DETAILS</div><h2>Edit image name</h2>
+            <p className="modal-intro">Change the name shown in the library. The image URL stays the same, so existing portal links keep working.</p>
+            <label className="form-label" htmlFor="edit-image-name">Image name <b>*</b></label>
+            <input id="edit-image-name" className="field" value={editName} onChange={event => setEditName(event.target.value)} maxLength={80} minLength={2} required autoFocus />
+            <div className="filename-hint">PLU {pendingEdit.plu} · {pendingEdit.sector} · URL unchanged</div>
+            {formError && <p className="form-error" role="alert">{formError}</p>}
+            <div className="modal-actions"><button className="secondary-button" disabled={managing} type="button" onClick={closeDialog}>Cancel</button><button className="primary-button" disabled={managing || editName.trim().length < 2}>{managing ? "Saving name…" : "Save name"}</button></div>
+          </form> : dialog === "copy" && pendingCopy ? <form onSubmit={copyImageToSectors}>
+            <div className="section-eyebrow">SHARE ACROSS SECTORS</div><h2>Copy to other sectors</h2>
+            <p className="modal-intro">Create separate library images using the same photo, name and PLU. Each copy gets its own sector and URL; no AI generation is used.</p>
+            <div className="copy-source-preview">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={pendingCopy.url} alt={`Preview of ${pendingCopy.name}`} />
+              <span><b>{pendingCopy.name}</b><small>PLU {pendingCopy.plu} · currently in {pendingCopy.sector}</small></span>
+            </div>
+            <div className="copy-sector-list" role="group" aria-label="Choose destination sectors">
+              <label className="copy-sector-option copy-select-all"><input type="checkbox" checked={sectors.filter(value => value !== pendingCopy.sector).every(value => copySectors.includes(value))} disabled={managing} onChange={event => setCopySectors(event.target.checked ? sectors.filter(value => value !== pendingCopy.sector) : [])} /><span><b>Select all other sectors</b></span></label>
+              {sectors.filter(value => value !== pendingCopy.sector).map(value => <label className="copy-sector-option" key={value}><input type="checkbox" checked={copySectors.includes(value)} disabled={managing} onChange={event => setCopySectors(current => event.target.checked ? [...current, value] : current.filter(selected => selected !== value))} /><span><b>{value}</b></span></label>)}
+            </div>
+            {formError && <p className="form-error" role="alert">{formError}</p>}
+            <div className="modal-actions"><button className="secondary-button" disabled={managing} type="button" onClick={closeDialog}>Cancel</button><button className="primary-button" disabled={managing || copySectors.length === 0}>{managing ? "Copying image…" : `Copy to ${copySectors.length || "selected"} sector${copySectors.length === 1 ? "" : "s"}`}</button></div>
           </form> : pendingDelete && <div>
             <div className="modal-icon delete-modal-icon">⌫</div><div className="section-eyebrow">REMOVE FROM LIBRARY</div><h2>Delete this image?</h2>
             <p className="modal-intro">You’re deleting <b>{pendingDelete.name}</b> (PLU {pendingDelete.plu}, {pendingDelete.sector}). The image will be permanently removed from Cloudinary. Any portal sheet using this URL will stop loading after cached copies expire.</p>
