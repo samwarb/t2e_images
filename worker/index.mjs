@@ -95,12 +95,17 @@ async function catalogue(request, env) {
   return json(request, env, { images, nextCursor: payload.next_cursor || null }, 200, { "Cache-Control": "public, max-age=30" });
 }
 
-async function imageFromOpenAI(form, action, env) {
+async function imageFromOpenAI(body, action, env) {
   if (!env.OPENAI_API_KEY) throw new Error("OpenAI image generation is not configured. Ask the administrator to add the OpenAI API key.");
   let response;
+  const headers = { Authorization: "Bearer " + env.OPENAI_API_KEY };
+  if (!(body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(body);
+  }
   try {
     response = await fetch("https://api.openai.com/v1/images/" + (action === "generate" ? "generations" : "edits"), {
-      method: "POST", headers: { Authorization: "Bearer " + env.OPENAI_API_KEY }, body: form
+      method: "POST", headers, body
     });
   } catch { throw new Error("Unable to reach OpenAI. Please try again."); }
   if (!response.ok) {
@@ -128,14 +133,15 @@ async function enhance(source, mime, env) {
   return imageFromOpenAI(form, "cleanup", env);
 }
 async function generate(description, env) {
-  const form = new FormData();
-  form.append("model", env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst");
-  form.append("quality", "low");
-  form.append("size", "1024x1024");
-  form.append("n", "1");
-  form.append("output_format", "webp");
-  form.append("prompt", "Create one realistic, appetising catering menu-catalogue photograph showing: " + description + ". Follow these visual directions: " + STYLE_GUIDE + " Keep the requested food recognizable and plausible, with no text, labels, logos, or extra props.");
-  return imageFromOpenAI(form, "generate", env);
+  const body = {
+    model: env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst",
+    quality: "low",
+    size: "1024x1024",
+    n: 1,
+    output_format: "webp",
+    prompt: "Create one realistic, appetising catering menu-catalogue photograph showing: " + description + ". Follow these visual directions: " + STYLE_GUIDE + " Keep the requested food recognizable and plausible, with no text, labels, logos, or extra props."
+  };
+  return imageFromOpenAI(body, "generate", env);
 }
 async function addImage(request, env) {
   const candidate = request.headers.get("X-Upload-Password") || "";

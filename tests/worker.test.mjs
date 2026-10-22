@@ -36,17 +36,28 @@ async function runImagePost({ mode, cleanup = false }) {
   const previousFetch = globalThis.fetch;
   let openAiEndpoint = "";
   let prompt = "";
+  let openAiContentType = "";
   let cloudinaryContext = "";
   globalThis.fetch = async (input, init = {}) => {
     const url = String(input);
     if (url.startsWith("https://api.openai.com/")) {
       openAiEndpoint = url;
-      const openAiForm = init.body;
-      prompt = openAiForm.get("prompt");
-      assert.equal(openAiForm.get("model"), "gpt-image-2.5-sunburst");
-      assert.equal(openAiForm.get("quality"), "low");
-      assert.equal(openAiForm.get("size"), "1024x1024");
-      assert.equal(openAiForm.get("output_format"), "webp");
+      openAiContentType = init.headers?.["Content-Type"] || "browser-managed multipart";
+      const isGeneration = url.endsWith("/generations");
+      if (isGeneration) {
+        assert.equal(openAiContentType, "application/json");
+        assert.equal(typeof init.body, "string");
+      } else {
+        assert.ok(init.body instanceof FormData);
+        assert.equal(openAiContentType, "browser-managed multipart");
+      }
+      const openAiBody = isGeneration ? JSON.parse(init.body) : init.body;
+      prompt = openAiBody instanceof FormData ? openAiBody.get("prompt") : openAiBody.prompt;
+      const value = (key) => openAiBody instanceof FormData ? openAiBody.get(key) : openAiBody[key];
+      assert.equal(value("model"), "gpt-image-2.5-sunburst");
+      assert.equal(value("quality"), "low");
+      assert.equal(value("size"), "1024x1024");
+      assert.equal(value("output_format"), "webp");
       return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from(outputWebp).toString("base64") }] }), { status: 200 });
     }
     if (url.startsWith("https://api.cloudinary.com/")) {
@@ -75,7 +86,7 @@ async function runImagePost({ mode, cleanup = false }) {
       method: "POST", headers: { "X-Upload-Password": mockEnv.UPLOAD_PASSWORD }, body: form
     });
     const response = await worker.fetch(request, mockEnv);
-    return { response, data: await response.json(), openAiEndpoint, prompt, cloudinaryContext };
+    return { response, data: await response.json(), openAiEndpoint, openAiContentType, prompt, cloudinaryContext };
   } finally {
     globalThis.fetch = previousFetch;
   }
@@ -85,6 +96,7 @@ test("AI generation uses the shared visual style and stores generated metadata",
   const result = await runImagePost({ mode: "generate" });
   assert.equal(result.response.status, 201);
   assert.equal(result.openAiEndpoint, "https://api.openai.com/v1/images/generations");
+  assert.equal(result.openAiContentType, "application/json");
   assert.match(result.prompt, /Roasted vegetables with quinoa and feta/);
   assert.match(result.prompt, /off-white speckled ceramic bowl/);
   assert.match(result.cloudinaryContext, /sector=B&I\|cleaned=no\|generated=yes/);
@@ -97,6 +109,7 @@ test("AI cleanup uses the same visual style and keeps cleanup metadata distinct"
   const result = await runImagePost({ mode: "upload", cleanup: true });
   assert.equal(result.response.status, 201);
   assert.equal(result.openAiEndpoint, "https://api.openai.com/v1/images/edits");
+  assert.equal(result.openAiContentType, "browser-managed multipart");
   assert.match(result.prompt, /Preserve the exact food/);
   assert.match(result.prompt, /off-white speckled ceramic bowl/);
   assert.match(result.cloudinaryContext, /sector=B&I\|cleaned=yes\|generated=no/);
