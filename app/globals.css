@@ -142,3 +142,13 @@ footer{padding:26px max(28px,calc((100vw - 1260px)/2));border-top:1px solid var(
 .bulk-upload-submit{margin-top:9px;padding:9px 13px;font-size:10px}
 .bulk-destination-sector{margin:11px 0}
 .bulk-destination-sector .form-label{margin:0 0 6px;font-size:10px}
+.bulk-filter-bar{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin:12px 0 14px}
+.bulk-filter-label{margin-right:2px;color:#90899f;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.07em}
+.bulk-filter{display:inline-flex;align-items:center;gap:7px;min-height:32px;padding:7px 10px;border:1px solid #e9e5f0;border-radius:9px;background:#fff;color:#746d84;font-size:10px;font-weight:750;white-space:nowrap;transition:background .16s,border-color .16s,color .16s}
+.bulk-filter b{color:#514b67;font-size:10px}
+.bulk-filter:hover:not(:disabled){border-color:#b9acec;background:#fbfaff;color:#5844b4}
+.bulk-filter.active{border-color:#6551cc;background:#6551cc;color:#fff}
+.bulk-filter.active b{color:#fff}
+.bulk-filter:disabled{opacity:.5;cursor:not-allowed}
+.bulk-empty-filter{margin:10px 0;padding:28px 15px;border:1px dashed #e6e1ef;border-radius:12px;text-align:center;color:#898397;font-size:11px}
+@media(max-width:500px){.bulk-filter-bar{gap:6px}.bulk-filter-label{width:100%;margin-bottom:1px}.bulk-filter{min-height:30px;padding:6px 8px;font-size:9px}.bulk-filter b{font-size:9px}}

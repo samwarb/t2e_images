@@ -7,6 +7,7 @@ import type { BulkAnalysis, BulkAssignment, BulkProduct, Picture } from "./libra
 
 type ReviewProduct = BulkProduct & { sameSector: Picture[]; otherSectors: Picture[] };
 type Choice = { kind: "use"; image: Picture } | { kind: "review"; image: Picture } | { kind: "skip"; image?: Picture };
+type ReviewFilter = "all" | "other-sector" | "no-image" | "in-sector" | "needs-choice" | "selected" | "skipped";
 type ApiResult = { images?: Picture[]; nextCursor?: string | null; error?: string };
 type Props = {
   apiBase: string;
@@ -35,6 +36,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
   const [file, setFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<BulkAnalysis | null>(null);
   const [items, setItems] = useState<ReviewProduct[]>([]);
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
   const [choices, setChoices] = useState<Record<string, Choice>>({});
   const [optionsOpen, setOptionsOpen] = useState<Record<string, boolean>>({});
   const [generationDescriptions, setGenerationDescriptions] = useState<Record<string, string>>({});
@@ -65,6 +67,27 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
     const choice = choices[item.id];
     return choice?.kind !== "use" && choice?.kind !== "skip";
   }).length;
+  const filterCounts = {
+    all: items.length,
+    otherSector: items.filter(item => item.otherSectors.length > 0).length,
+    noImage: items.filter(item => item.sameSector.length === 0 && item.otherSectors.length === 0 && choices[item.id]?.kind !== "use").length,
+    inSector: items.filter(item => item.sameSector.length > 0).length,
+    needsChoice: unresolvedCount,
+    selected: items.filter(item => choices[item.id]?.kind === "use").length,
+    skipped: items.filter(item => choices[item.id]?.kind === "skip").length
+  };
+  const filteredItems = useMemo(() => items.filter(item => {
+    const choice = choices[item.id];
+    switch (reviewFilter) {
+      case "other-sector": return item.otherSectors.length > 0;
+      case "no-image": return item.sameSector.length === 0 && item.otherSectors.length === 0 && choice?.kind !== "use";
+      case "in-sector": return item.sameSector.length > 0;
+      case "needs-choice": return choice?.kind !== "use" && choice?.kind !== "skip";
+      case "selected": return choice?.kind === "use";
+      case "skipped": return choice?.kind === "skip";
+      default: return true;
+    }
+  }), [items, choices, reviewFilter]);
   const missingToGenerate = items.filter(item =>
     item.sameSector.length === 0 && item.otherSectors.length === 0 &&
     choices[item.id]?.kind !== "skip" && choices[item.id]?.kind !== "use" && item.canGenerate
@@ -125,7 +148,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
 
   async function analyze() {
     if (!file || !sector) return;
-    setLoading(true); setError(""); setAnalysis(null); setItems([]); setChoices({}); setOptionsOpen({}); setItemErrors({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({});
+    setLoading(true); setError(""); setAnalysis(null); setItems([]); setChoices({}); setReviewFilter("all"); setOptionsOpen({}); setItemErrors({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({});
     try {
       const workbook = await inspectBulkWorkbook(file);
       const catalog = await loadFullCatalog();
@@ -324,10 +347,20 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
             <span><b>{analysis.ignoredBlankPluRows}</b> rows without a PLU ignored</span>
           </div>
           <p className="bulk-sheet-note">Sheets checked: {analysis.sheets.join(", ")}. {allSectorsSelected ? <>PLUs are matched across all sectors; choose a destination sector below for any new images.</> : <>Existing images in <b>{sector}</b> are matched automatically when one clear match exists.</>}</p>
+          <div className="bulk-filter-bar" role="group" aria-label="Filter workbook items">
+            <span className="bulk-filter-label">Show</span>
+            <button type="button" className={reviewFilter === "all" ? "bulk-filter active" : "bulk-filter"} aria-pressed={reviewFilter === "all"} onClick={() => setReviewFilter("all")}>All PLUs <b>{filterCounts.all}</b></button>
+            {!allSectorsSelected && <button type="button" className={reviewFilter === "other-sector" ? "bulk-filter active" : "bulk-filter"} aria-pressed={reviewFilter === "other-sector"} disabled={filterCounts.otherSector === 0} onClick={() => setReviewFilter("other-sector")}>PLU found in different sector <b>{filterCounts.otherSector}</b></button>}
+            <button type="button" className={reviewFilter === "no-image" ? "bulk-filter active" : "bulk-filter"} aria-pressed={reviewFilter === "no-image"} disabled={filterCounts.noImage === 0} onClick={() => setReviewFilter("no-image")}>No image found <b>{filterCounts.noImage}</b></button>
+            <button type="button" className={reviewFilter === "in-sector" ? "bulk-filter active" : "bulk-filter"} aria-pressed={reviewFilter === "in-sector"} disabled={filterCounts.inSector === 0} onClick={() => setReviewFilter("in-sector")}>{allSectorsSelected ? "Found in catalogue" : `Found in ${sector}`} <b>{filterCounts.inSector}</b></button>
+            <button type="button" className={reviewFilter === "needs-choice" ? "bulk-filter active" : "bulk-filter"} aria-pressed={reviewFilter === "needs-choice"} disabled={filterCounts.needsChoice === 0} onClick={() => setReviewFilter("needs-choice")}>Needs a choice <b>{filterCounts.needsChoice}</b></button>
+            <button type="button" className={reviewFilter === "selected" ? "bulk-filter active" : "bulk-filter"} aria-pressed={reviewFilter === "selected"} disabled={filterCounts.selected === 0} onClick={() => setReviewFilter("selected")}>URL selected <b>{filterCounts.selected}</b></button>
+            <button type="button" className={reviewFilter === "skipped" ? "bulk-filter active" : "bulk-filter"} aria-pressed={reviewFilter === "skipped"} disabled={filterCounts.skipped === 0} onClick={() => setReviewFilter("skipped")}>Skipped <b>{filterCounts.skipped}</b></button>
+          </div>
           {missingToGenerate.length > 0 && <div className="bulk-generate-all"><span>{missingToGenerate.length} PLUs have no catalog image. {allSectorsSelected && "Choose a destination sector for each item below. "}AI generation is billed to the OpenAI API account.</span><button type="button" className="primary-button" disabled={generatingAll || !canGenerateAll} onClick={() => void generateAllMissing()}>{generatingAll ? `Generating ${progress?.current || 1} of ${progress?.total || missingToGenerate.length}…` : `Generate all ${missingToGenerate.length} missing`}</button></div>}
 
           <div className="bulk-items" aria-label="PLU match review">
-            {items.map(item => {
+            {filteredItems.map(item => {
               const choice = choices[item.id];
               const busy = generatingIds.includes(item.id) || uploadingIds.includes(item.id);
               const errorText = itemErrors[item.id];
@@ -410,6 +443,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
             })}
           </div>
           {items.length === 0 && <div className="empty-state bulk-empty"><h3>Nothing needs filling</h3><p>Every PLU row already has an image URL, or there were no PLUs in the workbook.</p></div>}
+          {items.length > 0 && filteredItems.length === 0 && <div className="empty-state bulk-empty bulk-empty-filter"><h3>No PLUs in this filter</h3><p>Try another review status to see more workbook items.</p><button type="button" className="link-button" onClick={() => setReviewFilter("all")}>Show all PLUs</button></div>}
           {error && <p className="form-error" role="alert">{error}</p>}
           <div className="bulk-download-summary">{rowsToFill} URL{rowsToFill === 1 ? "" : "s"} selected for {rowsToFill} row{rowsToFill === 1 ? "" : "s"}{unresolvedCount > 0 ? ` · ${unresolvedCount} item${unresolvedCount === 1 ? "" : "s"} need a choice` : " · all items reviewed"}</div>
           <div className="modal-actions bulk-footer-actions"><button className="secondary-button" type="button" disabled={generatingAll || Boolean(generatingIds.length) || Boolean(uploadingIds.length) || downloading} onClick={() => { setAnalysis(null); setItems([]); setChoices({}); setOptionsOpen({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({}); setItemErrors({}); setError(""); }}>Choose another file</button><button className="primary-button" type="button" disabled={!choicesReady || rowsToFill === 0 || downloading || generatingAll || Boolean(generatingIds.length) || Boolean(uploadingIds.length)} onClick={() => void downloadWorkbook()}>{downloading ? "Preparing workbook…" : "Assign all URLs & download workbook ↓"}</button></div>
