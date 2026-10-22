@@ -254,7 +254,6 @@ export async function fillBulkWorkbook(file: File, products: BulkProduct[], assi
       changed.add(path);
     }
   }
-  if (!changed.size) throw new Error("No blank Image URL cells were available to fill.");
   const encoder = new TextEncoder();
   for (const path of changed) {
     const doc = documents.get(path);

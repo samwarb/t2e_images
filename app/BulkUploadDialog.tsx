@@ -53,10 +53,6 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
   const [itemErrors, setItemErrors] = useState<Record<string, string>>({});
   const allSectorsSelected = sector === ALL_SECTORS;
 
-  const choicesReady = items.length > 0 && items.every(item => {
-    const choice = choices[item.id];
-    return choice?.kind === "use" || choice?.kind === "skip";
-  });
   const assignments = useMemo<BulkAssignment[]>(() => items.flatMap(item => {
     const choice = choices[item.id];
     return choice?.kind === "use" ? [{ productId: item.id, url: choice.image.url }] : [];
@@ -292,7 +288,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
   }
 
   async function downloadWorkbook() {
-    if (!file || !choicesReady || !rowsToFill || downloading) return;
+    if (!file || !analysis || items.length === 0 || downloading) return;
     setDownloading(true); setError("");
     try {
       const blob = await fillBulkWorkbook(file, items, assignments);
@@ -445,8 +441,8 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
           {items.length === 0 && <div className="empty-state bulk-empty"><h3>Nothing needs filling</h3><p>Every PLU row already has an image URL, or there were no PLUs in the workbook.</p></div>}
           {items.length > 0 && filteredItems.length === 0 && <div className="empty-state bulk-empty bulk-empty-filter"><h3>No PLUs in this filter</h3><p>Try another review status to see more workbook items.</p><button type="button" className="link-button" onClick={() => setReviewFilter("all")}>Show all PLUs</button></div>}
           {error && <p className="form-error" role="alert">{error}</p>}
-          <div className="bulk-download-summary">{rowsToFill} URL{rowsToFill === 1 ? "" : "s"} selected for {rowsToFill} row{rowsToFill === 1 ? "" : "s"}{unresolvedCount > 0 ? ` · ${unresolvedCount} item${unresolvedCount === 1 ? "" : "s"} need a choice` : " · all items reviewed"}</div>
-          <div className="modal-actions bulk-footer-actions"><button className="secondary-button" type="button" disabled={generatingAll || Boolean(generatingIds.length) || Boolean(uploadingIds.length) || downloading} onClick={() => { setAnalysis(null); setItems([]); setChoices({}); setOptionsOpen({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({}); setItemErrors({}); setError(""); }}>Choose another file</button><button className="primary-button" type="button" disabled={!choicesReady || rowsToFill === 0 || downloading || generatingAll || Boolean(generatingIds.length) || Boolean(uploadingIds.length)} onClick={() => void downloadWorkbook()}>{downloading ? "Preparing workbook…" : "Assign all URLs & download workbook ↓"}</button></div>
+          <div className="bulk-download-summary">{rowsToFill} URL{rowsToFill === 1 ? "" : "s"} selected for {rowsToFill} row{rowsToFill === 1 ? "" : "s"}{unresolvedCount > 0 ? ` · ${unresolvedCount} item${unresolvedCount === 1 ? "" : "s"} need a choice` : " · all items reviewed"}. You can download now; PLUs without a selected URL will stay blank.</div>
+          <div className="modal-actions bulk-footer-actions"><button className="secondary-button" type="button" disabled={generatingAll || Boolean(generatingIds.length) || Boolean(uploadingIds.length) || downloading} onClick={() => { setAnalysis(null); setItems([]); setChoices({}); setOptionsOpen({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({}); setItemErrors({}); setError(""); }}>Choose another file</button><button className="primary-button" type="button" disabled={items.length === 0 || downloading || generatingAll || Boolean(generatingIds.length) || Boolean(uploadingIds.length)} onClick={() => void downloadWorkbook()}>{downloading ? "Preparing workbook…" : "Assign selected URLs & download workbook ↓"}</button></div>
           <p className="style-note">Generated image requests run one at a time. Skipped rows and existing URLs are left unchanged.</p>
         </>}
       </section>
