@@ -1,3 +1,10 @@
 import type { NextConfig } from "next";
-const config: NextConfig = { output: "standalone", serverExternalPackages: ["@google-cloud/storage", "@google-cloud/firestore"] };
-export default config;
+
+const nextConfig: NextConfig = {
+  output: "export",
+  basePath: "/t2e_images",
+  trailingSlash: true,
+  images: { unoptimized: true },
+};
+
+export default nextConfig;
