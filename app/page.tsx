@@ -9,6 +9,8 @@ type Picture = {
 type ListResult = { images?: Picture[]; nextCursor?: string | null; error?: string };
 type Dialog = "login" | "upload" | null;
 const defaults = ["Business & Industry", "Education", "Healthcare", "Defence", "Sports & Leisure", "Travel", "Other"];
+const API_URL = process.env.NEXT_PUBLIC_T2E_API_URL || "";
+function api(path: string): string { return API_URL.replace(/\/$/, "") + path; }
 
 export default function Home() {
   const [images, setImages] = useState<Picture[]>([]);
@@ -22,6 +24,8 @@ export default function Home() {
   const [activeSector, setActiveSector] = useState("All sectors");
   const [toast, setToast] = useState("");
   const [password, setPassword] = useState("");
+  // Kept in memory only, never in localStorage, repository code or query strings.
+  const [uploadPassword, setUploadPassword] = useState("");
   const [signingIn, setSigningIn] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
@@ -32,11 +36,7 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [formError, setFormError] = useState("");
 
-  useEffect(() => {
-    fetch("/api/auth", { cache: "no-store" }).then(r => r.json())
-      .then(d => setAuthenticated(Boolean(d.authenticated))).catch(() => undefined);
-    void loadImages();
-  }, []);
+  useEffect(() => { void loadImages(); }, []);
 
   useEffect(() => {
     if (!file) { setPreview(""); return; }
@@ -54,7 +54,8 @@ export default function Home() {
     if (cursor) setLoadingMore(true);
     else { setLoading(true); setLoadError(""); }
     try {
-      const endpoint = "/api/images" + (cursor ? "?cursor=" + encodeURIComponent(cursor) : "");
+      if (!API_URL) throw new Error("The image library backend is not connected yet. Add the GitHub repository variable T2E_API_URL after deploying the Cloudflare Worker.");
+      const endpoint = api("/api/images") + (cursor ? "?cursor=" + encodeURIComponent(cursor) : "");
       const response = await fetch(endpoint, { cache: "no-store" });
       const data = await response.json() as ListResult;
       if (!response.ok) throw new Error(data.error || "Unable to load images.");
@@ -90,19 +91,19 @@ export default function Home() {
     event.preventDefault();
     setSigningIn(true); setFormError("");
     try {
-      const response = await fetch("/api/auth", {
+      const response = await fetch(api("/api/auth"), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password })
       });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || "Unable to sign in.");
-      setAuthenticated(true); setPassword(""); setDialog("upload"); notify("Upload access granted.");
+      setUploadPassword(password); setAuthenticated(true); setPassword(""); setDialog("upload"); notify("Upload access granted.");
     } catch (error) { setFormError(error instanceof Error ? error.message : "Sign in failed."); }
     finally { setSigningIn(false); }
   }
 
-  async function signOut() {
-    await fetch("/api/auth", { method: "DELETE" }).catch(() => undefined);
+  function signOut() {
+    setUploadPassword("");
     setAuthenticated(false);
     notify("Signed out of uploads.");
   }
@@ -123,7 +124,7 @@ export default function Home() {
       form.append("plu", plu);
       form.append("sector", sector);
       form.append("cleanup", String(cleanup));
-      const response = await fetch("/api/images", { method: "POST", body: form });
+      const response = await fetch(api("/api/images"), { method: "POST", headers: { "X-Upload-Password": uploadPassword }, body: form });
       const data = await response.json() as { image?: Picture; error?: string };
       if (!response.ok || !data.image) throw new Error(data.error || "Upload failed.");
       setImages(current => [data.image as Picture, ...current]);
@@ -163,7 +164,7 @@ export default function Home() {
           <div className="hero-copy">
             <div className="eyebrow"><span className="eyebrow-dot" /> YOUR CREATIVE WORKSPACE</div>
             <h1>Every image.<br /><em>One place.</em></h1>
-            <p>Keep your food and product imagery beautifully organised. Find the right asset, enhance it with AI, and share it in a click.</p>
+            <p>Keep your food and product imagery beautifully organised. Improve photos with optional low-cost OpenAI cleanup and share links in a click.</p>
             <button type="button" className="hero-button" onClick={openUpload}><span aria-hidden="true">＋</span> Add a new image <span aria-hidden="true">↗</span></button>
           </div>
           <div className="hero-art" aria-hidden="true">
@@ -196,7 +197,7 @@ export default function Home() {
           : visible.length > 0 ? <div className="image-grid">
             {visible.map(image => <article key={image.id} className="image-card">
               <a className="image-preview" href={image.url} target="_blank" rel="noreferrer" title={"Open " + image.name}>
-                {/* The public image route handles private GCS objects, so a regular img element is intentional. */}
+                {/* Remote Cloudinary URLs are served directly, so a regular img is intentional. */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={image.url} alt={image.name} loading="lazy" />
                 {image.cleaned && <span className="ai-label">✦ AI cleaned</span>}
@@ -222,7 +223,7 @@ export default function Home() {
           <button type="button" className="modal-close" disabled={uploading} onClick={() => setDialog(null)} aria-label="Close dialog">×</button>
           {dialog === "login" ? <form onSubmit={login}>
             <div className="modal-icon">◇</div><div className="section-eyebrow">SECURE ACCESS</div><h2>Uploader sign in</h2>
-            <p className="modal-intro">Everyone can browse and share images. Enter the uploader password to add new ones.</p>
+            <p className="modal-intro">Everyone can browse and share images. Enter the uploader password to add new ones. Your password is kept only for this tab session.</p>
             <label className="form-label" htmlFor="upload-password">Upload password</label>
             <input id="upload-password" className="field" type="password" value={password} onChange={event => setPassword(event.target.value)} autoFocus required placeholder="Enter your password" />
             {formError && <p className="form-error" role="alert">{formError}</p>}
@@ -238,7 +239,7 @@ export default function Home() {
               <div><label className="form-label" htmlFor="asset-plu">PLU <b>*</b></label><input id="asset-plu" className="field" value={plu} onChange={event => setPlu(event.target.value)} placeholder="e.g. 001234" maxLength={32} pattern="[a-zA-Z0-9-]+" required/></div>
               <div className="span-2"><label className="form-label" htmlFor="asset-sector">Sector <b>*</b></label><input id="asset-sector" className="field" list="sectors" value={sector} onChange={event => setSector(event.target.value)} placeholder="Choose or type a sector" maxLength={60} minLength={2} required/><datalist id="sectors">{suggestedSectors.map(value => <option key={value} value={value}/>)}</datalist></div>
             </div>
-            <label className="enhance-choice"><input type="checkbox" checked={cleanup} onChange={event => setCleanup(event.target.checked)} /><span className="enhance-icon">✦</span><span><strong>Clean up with AI</strong><small>Improve lighting and presentation using the low-cost OpenAI setting. AI edits may alter details; review the result.</small></span></label>
+            <label className="enhance-choice"><input type="checkbox" checked={cleanup} onChange={event => setCleanup(event.target.checked)} /><span className="enhance-icon">✦</span><span><strong>Clean up with AI</strong><small>Improve lighting and presentation using OpenAI low-quality image editing (charged to your OpenAI API account). AI edits may alter details; review the result.</small></span></label>
             {name && plu && sector && <div className="filename-hint">Filename: {name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") + "_" + plu.toLowerCase() + "_" + sector.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") + (cleanup ? ".webp" : file?.type === "image/png" ? ".png" : file?.type === "image/webp" ? ".webp" : ".jpg")}</div>}
             {formError && <p className="form-error" role="alert">{formError}</p>}
             <div className="modal-actions"><button className="secondary-button" disabled={uploading} type="button" onClick={() => setDialog(null)}>Cancel</button><button className="primary-button" type="submit" disabled={uploading || !file}>{uploading ? (cleanup ? "Cleaning and uploading..." : "Uploading...") : "Upload image →"}</button></div>
