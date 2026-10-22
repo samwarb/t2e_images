@@ -2,6 +2,7 @@
 // Credentials are Cloudflare secrets. Never expose them in the static site.
 const MAX_UPLOAD = 8 * 1024 * 1024;
 const PREFIX = "t2e-library/";
+const LIBRARY_PUBLIC_ID = /^t2e-library\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[a-z0-9-]+_[a-z0-9-]+_[a-z0-9-]+$/i;
 const RESPONSE_HEADERS = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
 const SECTORS = new Set(["B&I", "Chartwells", "Compass One", "Levy", "RA", "Ireland"]);
 const STYLE_GUIDE = "Use a consistent, photorealistic catering menu style inspired by a colorful grain bowl photographed close-up from a slightly overhead angle: a simple off-white speckled ceramic bowl or plate when appropriate, a pale warm stone surface, soft diffused natural daylight, warm neutral tones, crisp authentic food texture, subtle shadows, and minimal clutter. Keep the food as the focus. No added text, labels, logos, or decorative props.";
@@ -10,7 +11,7 @@ function originHeaders(request, env) {
   const origin = request.headers.get("Origin");
   const allowed = env.ALLOWED_ORIGIN || "https://samwarb.github.io";
   if (origin && (origin === allowed || /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin))) {
-    return { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, X-Upload-Password", "Vary": "Origin" };
+    return { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, X-Upload-Password", "Vary": "Origin" };
   }
   return { "Vary": "Origin" };
 }
@@ -63,7 +64,8 @@ function cloudinaryContext(value) { return value.replace(/\\/g, "\\\\").replace(
 async function catalogue(request, env) {
   const cursor = new URL(request.url).searchParams.get("cursor");
   if (cursor && (cursor.length > 1024 || !/^[A-Za-z0-9_\-=]+$/.test(cursor))) return err(request, env, 400, "Invalid page cursor.");
-  const params = new URLSearchParams({ prefix: PREFIX, max_results: "48", context: "true" });
+  const bulk = new URL(request.url).searchParams.get("bulk") === "1";
+  const params = new URLSearchParams({ prefix: PREFIX, max_results: bulk ? "500" : "48", context: "true" });
   if (cursor) params.set("next_cursor", cursor);
   const auth = btoa(env.CLOUDINARY_API_KEY + ":" + env.CLOUDINARY_API_SECRET);
   const endpoint = "https://api.cloudinary.com/v1_1/" + encodeURIComponent(env.CLOUDINARY_CLOUD_NAME) + "/resources/image/upload?" + params;
@@ -83,6 +85,7 @@ async function catalogue(request, env) {
     const sector = typeof c.sector === "string" ? c.sector : "Uncategorised";
     return {
       id: asset.asset_id || asset.public_id,
+      publicId: asset.public_id,
       name, plu, sector, filename: original + "." + (asset.format || "jpg"),
       bytes: asset.bytes || 0,
       cleaned: c.cleaned === "yes",
@@ -209,8 +212,39 @@ async function addImage(request, env) {
   if (typeof saved.secure_url !== "string") return err(request, env, 502, "Storage provider did not return an image URL.");
   return json(request, env, {
     image: { id: saved.asset_id || id, name, plu, sector, filename, bytes: saved.bytes || blob.size,
-      cleaned, generated, createdAt: saved.created_at || new Date().toISOString(), url: saved.secure_url }
+      publicId, cleaned, generated, createdAt: saved.created_at || new Date().toISOString(), url: saved.secure_url }
   }, 201);
+}
+
+async function deleteImage(request, env) {
+  const candidate = request.headers.get("X-Upload-Password") || "";
+  if (!(await passwordOk(candidate, env.UPLOAD_PASSWORD))) return err(request, env, 401, "Incorrect upload password.");
+  let publicId;
+  try { publicId = (await request.json())?.publicId; }
+  catch { return err(request, env, 400, "Invalid delete request."); }
+  if (typeof publicId !== "string" || publicId.length > 256 || !LIBRARY_PUBLIC_ID.test(publicId))
+    return err(request, env, 400, "This image cannot be deleted from the library.");
+
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const unsigned = { invalidate: "true", public_id: publicId, timestamp };
+  const stringToSign = Object.entries(unsigned).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${key}=${value}`).join("&");
+  const signature = await sha1Hex(stringToSign + env.CLOUDINARY_API_SECRET);
+  const form = new FormData();
+  form.append("public_id", publicId);
+  form.append("timestamp", timestamp);
+  form.append("invalidate", "true");
+  form.append("api_key", env.CLOUDINARY_API_KEY);
+  form.append("signature", signature);
+  const endpoint = "https://api.cloudinary.com/v1_1/" + encodeURIComponent(env.CLOUDINARY_CLOUD_NAME) + "/image/destroy";
+  const response = await fetch(endpoint, { method: "POST", body: form });
+  if (!response.ok) {
+    console.error("Cloudinary asset delete failed", response.status);
+    return err(request, env, 502, "Cloudinary could not delete this image. Please try again.");
+  }
+  const result = await response.json();
+  if (result?.result === "not found") return err(request, env, 404, "This image is no longer in Cloudinary.");
+  if (result?.result !== "ok") return err(request, env, 502, "Cloudinary did not confirm the image deletion.");
+  return json(request, env, { deleted: true });
 }
 
 export default {
@@ -223,7 +257,7 @@ export default {
     }
     const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET") return json(request, env, { ok: true, configured: required(env) });
-    if (request.method !== "GET" && request.method !== "POST") return err(request, env, 405, "Method not allowed.");
+    if (request.method !== "GET" && request.method !== "POST" && request.method !== "DELETE") return err(request, env, 405, "Method not allowed.");
     if (!required(env)) return err(request, env, 503, "Backend not configured. Contact the app administrator.");
     try {
       if (url.pathname === "/api/auth" && request.method === "POST") {
@@ -233,6 +267,7 @@ export default {
       }
       if (url.pathname === "/api/images" && request.method === "GET") return await catalogue(request, env);
       if (url.pathname === "/api/images" && request.method === "POST") return await addImage(request, env);
+      if (url.pathname === "/api/images" && request.method === "DELETE") return await deleteImage(request, env);
       return err(request, env, 404, "Not found.");
     } catch (error) {
       console.error("Unhandled image library error", error);

@@ -1,13 +1,12 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import BulkUploadDialog from "./BulkUploadDialog";
+import type { Picture } from "./library-types";
 
-type Picture = {
-  id: string; name: string; plu: string; sector: string; filename: string;
-  bytes: number; cleaned: boolean; generated?: boolean; createdAt: string; url: string;
-};
 type ListResult = { images?: Picture[]; nextCursor?: string | null; error?: string };
-type Dialog = "login" | "upload" | null;
+type Dialog = "login" | "upload" | "bulk" | "delete" | null;
+type DialogDestination = Exclude<Dialog, "login" | null>;
 const sectors = ["B&I", "Chartwells", "Compass One", "Levy", "RA", "Ireland"];
 const API_URL = process.env.NEXT_PUBLIC_T2E_API_URL || "";
 function api(path: string): string { return API_URL.replace(/\/$/, "") + path; }
@@ -20,6 +19,7 @@ export default function Home() {
   const [loadError, setLoadError] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [afterLogin, setAfterLogin] = useState<DialogDestination>("upload");
   const [search, setSearch] = useState("");
   const [activeSector, setActiveSector] = useState("All sectors");
   const [toast, setToast] = useState("");
@@ -37,6 +37,8 @@ export default function Home() {
   const [cleanup, setCleanup] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [formError, setFormError] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<Picture | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => { void loadImages(); }, []);
 
@@ -86,7 +88,21 @@ export default function Home() {
 
   function openUpload() {
     setFormError("");
+    setAfterLogin("upload");
     setDialog(authenticated ? "upload" : "login");
+  }
+
+  function openBulkUpload() {
+    setFormError("");
+    setAfterLogin("bulk");
+    setDialog(authenticated ? "bulk" : "login");
+  }
+
+  function openDelete(image: Picture) {
+    setPendingDelete(image);
+    setFormError("");
+    setAfterLogin("delete");
+    setDialog(authenticated ? "delete" : "login");
   }
 
   async function login(event: FormEvent<HTMLFormElement>) {
@@ -99,7 +115,7 @@ export default function Home() {
       });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error || "Unable to sign in.");
-      setUploadPassword(password); setAuthenticated(true); setPassword(""); setDialog("upload"); notify("Upload access granted.");
+      setUploadPassword(password); setAuthenticated(true); setPassword(""); setDialog(afterLogin); notify("Upload access granted.");
     } catch (error) { setFormError(error instanceof Error ? error.message : "Sign in failed."); }
     finally { setSigningIn(false); }
   }
@@ -139,6 +155,24 @@ export default function Home() {
     finally { setUploading(false); }
   }
 
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    setDeleting(true); setFormError("");
+    try {
+      if (!pendingDelete.publicId) throw new Error("This image needs a catalogue refresh before it can be deleted.");
+      const response = await fetch(api("/api/images"), {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", "X-Upload-Password": uploadPassword },
+        body: JSON.stringify({ publicId: pendingDelete.publicId })
+      });
+      const data = await response.json() as { deleted?: boolean; error?: string };
+      if (!response.ok || !data.deleted) throw new Error(data.error || "Image deletion failed.");
+      setImages(current => current.filter(image => image.id !== pendingDelete.id));
+      setPendingDelete(null); setDialog(null); notify("Image deleted from the library.");
+    } catch (error) { setFormError(error instanceof Error ? error.message : "Image deletion failed."); }
+    finally { setDeleting(false); }
+  }
+
   async function copyLink(image: Picture) {
     try {
       await navigator.clipboard.writeText(new URL(image.url, window.location.origin).toString());
@@ -157,6 +191,7 @@ export default function Home() {
         </div>
         <div className="top-actions">
           {authenticated && <button type="button" className="text-button" onClick={signOut}>Sign out</button>}
+          <button type="button" className="secondary-button header-bulk" onClick={openBulkUpload}>Bulk fill sheet</button>
           <button type="button" className="primary-button header-upload" onClick={openUpload}>
             <span aria-hidden="true">＋</span> Upload image
           </button>
@@ -209,7 +244,7 @@ export default function Home() {
               <div className="image-info"><div className="image-meta">{image.sector}</div><h3 title={image.name}>{image.name}</h3>
                 <div className="image-detail"><span>PLU <b>{image.plu}</b></span><span>{new Date(image.createdAt).toLocaleDateString("en-GB", {day:"numeric",month:"short",year:"numeric"})}</span></div>
                 <div className="file-name" title={image.filename}>{image.filename}</div>
-                <button type="button" className="copy-button" onClick={() => void copyLink(image)}><span aria-hidden="true">↗</span> Copy URL Link <span className="copy-icon" aria-hidden="true">⧉</span></button>
+                <div className="card-actions"><button type="button" className="copy-button" onClick={() => void copyLink(image)}><span aria-hidden="true">↗</span> Copy URL Link <span className="copy-icon" aria-hidden="true">⧉</span></button><button type="button" className="delete-button" onClick={() => openDelete(image)} aria-label={`Delete ${image.name}`}>Delete</button></div>
               </div>
             </article>)}
           </div> : <div className="empty-state"><div className="empty-icon">▧</div><h3>{images.length ? "No matching images" : "Your image library starts here"}</h3><p>{images.length ? "Try another search or sector." : "Upload your first image to start building the catalogue."}</p><button type="button" className="primary-button" onClick={images.length ? () => { setSearch(""); setActiveSector("All sectors"); } : openUpload}>{images.length ? "Clear filters" : "Upload first image"}</button></div>}
@@ -222,17 +257,18 @@ export default function Home() {
 
       {toast && <div className="toast" role="status">✓ {toast}</div>}
 
-      {dialog && <div className="modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget && !uploading) setDialog(null); }}>
-          <section className="modal" role="dialog" aria-modal="true" aria-label={dialog === "login" ? "Uploader sign in" : "Add an image"}>
-          <button type="button" className="modal-close" disabled={uploading} onClick={() => setDialog(null)} aria-label="Close dialog">×</button>
+      {dialog === "bulk" && <BulkUploadDialog apiBase={API_URL} uploadPassword={uploadPassword} sectors={sectors} onClose={() => setDialog(null)} onImagesAdded={added => setImages(current => [...added, ...current.filter(image => !added.some(next => next.id === image.id))])} notify={notify} />}
+      {dialog && dialog !== "bulk" && <div className="modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget && !uploading && !deleting) { setDialog(null); if (dialog === "delete") setPendingDelete(null); } }}>
+        <section className="modal" role="dialog" aria-modal="true" aria-label={dialog === "login" ? "Uploader sign in" : dialog === "upload" ? "Add an image" : "Delete an image"}>
+          <button type="button" className="modal-close" disabled={uploading || deleting} onClick={() => { setDialog(null); if (dialog === "delete") setPendingDelete(null); }} aria-label="Close dialog">×</button>
           {dialog === "login" ? <form onSubmit={login}>
             <div className="modal-icon">◇</div><div className="section-eyebrow">SECURE ACCESS</div><h2>Uploader sign in</h2>
-            <p className="modal-intro">Everyone can browse and share images. Enter the uploader password to add new ones. Your password is kept only for this tab session.</p>
+            <p className="modal-intro">Enter the uploader password to add images, fill a bulk sheet, or delete a library image. Your password is kept only for this tab session.</p>
             <label className="form-label" htmlFor="upload-password">Upload password</label>
             <input id="upload-password" className="field" type="password" value={password} onChange={event => setPassword(event.target.value)} autoFocus required placeholder="Enter your password" />
             {formError && <p className="form-error" role="alert">{formError}</p>}
             <button type="submit" className="primary-button full" disabled={signingIn}>{signingIn ? "Signing in..." : "Unlock uploads →"}</button>
-          </form> : <form onSubmit={upload}>
+          </form> : dialog === "upload" ? <form onSubmit={upload}>
             <div className="section-eyebrow">GROW THE LIBRARY</div><h2>Add an image</h2><p className="modal-intro">Upload a photo for AI cleanup, or create a new image from a description. Both AI options follow the same menu-photo style.</p>
             <div className="creation-modes" role="group" aria-label="Choose how to add an image">
               <button type="button" className={creationMode === "upload" ? "creation-mode active" : "creation-mode"} aria-pressed={creationMode === "upload"} onClick={() => { setCreationMode("upload"); setFormError(""); }}>Upload &amp; clean up</button>
@@ -257,7 +293,13 @@ export default function Home() {
             {name && plu && sector && <div className="filename-hint">Filename: {name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") + "_" + plu.toLowerCase() + "_" + sector.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") + (creationMode === "generate" || cleanup ? ".webp" : file?.type === "image/png" ? ".png" : file?.type === "image/webp" ? ".webp" : ".jpg")}</div>}
             {formError && <p className="form-error" role="alert">{formError}</p>}
             <div className="modal-actions"><button className="secondary-button" disabled={uploading} type="button" onClick={() => setDialog(null)}>Cancel</button><button className="primary-button" type="submit" disabled={uploading || (creationMode === "upload" && !file) || (creationMode === "generate" && description.trim().length < 3)}>{uploading ? (creationMode === "generate" ? "Generating and uploading..." : cleanup ? "Cleaning and uploading..." : "Uploading...") : creationMode === "generate" ? "Generate image →" : cleanup ? "Clean up & upload →" : "Upload image →"}</button></div>
-          </form>}
+          </form> : pendingDelete && <div>
+            <div className="modal-icon delete-modal-icon">⌫</div><div className="section-eyebrow">REMOVE FROM LIBRARY</div><h2>Delete this image?</h2>
+            <p className="modal-intro">You’re deleting <b>{pendingDelete.name}</b> (PLU {pendingDelete.plu}, {pendingDelete.sector}). The image will be permanently removed from Cloudinary. Any portal sheet using this URL will stop loading after cached copies expire.</p>
+            <p className="delete-note">This cannot be undone. CDN cache invalidation can take a few seconds or minutes to finish.</p>
+            {formError && <p className="form-error" role="alert">{formError}</p>}
+            <div className="modal-actions"><button className="secondary-button" disabled={deleting} type="button" onClick={() => { setPendingDelete(null); setDialog(null); }}>Cancel</button><button className="danger-confirm-button" disabled={deleting} type="button" onClick={() => void confirmDelete()}>{deleting ? "Deleting image…" : "Delete image permanently"}</button></div>
+          </div>}
         </section>
       </div>}
     </div>

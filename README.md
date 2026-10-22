@@ -4,6 +4,10 @@ A static web app for catering product images. Each image requires **Name**, **PL
 
 The add-image form offers regular upload, optional **Clean up with AI**, and **Generate with AI** from a description. The Cloudflare Worker calls OpenAI's image edit or generation endpoint with `gpt-image-2.5-sunburst`, `quality=low`, `size=1024x1024`, and WebP output, then saves the result to Cloudinary. Both AI operations use one shared photographic direction based on the reference image: close, slightly overhead menu photography, warm natural light, a pale stone background, neutral speckled ceramic serving ware, and realistic food texture. OpenAI API usage is billed separately from ChatGPT; both cleanup and generation incur API usage charges.
 
+The **Bulk portal sheet** flow fills blank Image URL cells in `.xlsx` files. It reads PLUs from column N, existing image URLs from column S, and uses the item name in column B as the prefilled AI description. The workbook is parsed and updated in the browser; it is not uploaded. Select a sector first, then choose a URL already in that sector, review a match from another sector, generate an image, or skip the item. Generation descriptions can be edited and missing PLUs can be generated one at a time or sequentially in one batch. Rows without a PLU and existing URLs are left alone.
+
+Library images can be removed from their card after confirming the deletion. The Worker checks the upload password and deletes only images inside the library's Cloudinary folder. Cloudinary invalidates cached copies, though a cached URL may take a short time to stop resolving.
+
 ## Architecture
 
 - **GitHub Pages:** statically exported Next.js gallery (no database/server on Pages).
@@ -52,6 +56,8 @@ Cloudinary's free plan currently includes 25 credits per month across storage, t
    **https://samwarb.github.io/t2e_images/**
 
 5. Open the site and choose one of the six sectors. Upload a photo and optionally tick **Clean up with AI**, or choose **Generate with AI** and describe the image. The output is stored in Cloudinary; Copy URL Link copies its actual CDN URL. Both AI actions use the paid OpenAI API.
+
+To fill a portal workbook, choose **Bulk fill sheet**, select the destination sector, and open an `.xlsx` file. The review screen distinguishes matches in that sector, matches from other sectors, and PLUs missing from the catalogue. Existing URLs stay unchanged; the downloaded copy receives only URLs selected or generated in the review. AI generation is billed to the OpenAI API account.
 
 The app loads and stores the upload password **only in the tab memory**. A refresh or new tab requires signing in again. For production/team-wide use, upgrade to individual identities and rate limiting; the shared password is intended only for a small initial prototype.
 

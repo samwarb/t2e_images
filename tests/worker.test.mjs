@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import worker, { filenameFor, imageMime, passwordOk, validate } from "../worker/index.mjs";
 
 test("filename is name_PLU_sector", () => {
@@ -115,4 +116,65 @@ test("AI cleanup uses the same visual style and keeps cleanup metadata distinct"
   assert.match(result.cloudinaryContext, /sector=B&I\|cleaned=yes\|generated=no/);
   assert.equal(result.data.image.cleaned, true);
   assert.equal(result.data.image.generated, false);
+});
+
+test("bulk catalogue uses 500-result pages and includes safe library public IDs", async () => {
+  const previousFetch = globalThis.fetch;
+  let requestedUrl = "";
+  globalThis.fetch = async input => {
+    requestedUrl = String(input);
+    return new Response(JSON.stringify({ resources: [{
+      asset_id: "asset-id",
+      public_id: "t2e-library/00000000-0000-4000-8000-000000000000/example_123_b-i",
+      secure_url: "https://res.cloudinary.com/test-cloud/image/upload/v1/t2e-library/example.webp",
+      context: { custom: { name: "Example", plu: "123", sector: "B&I" } },
+      format: "webp", bytes: 10, created_at: "2026-10-22T00:00:00Z"
+    }] }), { status: 200 });
+  };
+  try {
+    const response = await worker.fetch(new Request("https://worker.example/api/images?bulk=1"), mockEnv);
+    const data = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(new URL(requestedUrl).searchParams.get("max_results"), "500");
+    assert.equal(data.images[0].publicId, "t2e-library/00000000-0000-4000-8000-000000000000/example_123_b-i");
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test("image deletion requires uploader access and a library-owned public ID", async () => {
+  const previousFetch = globalThis.fetch;
+  const publicId = "t2e-library/00000000-0000-4000-8000-000000000000/example_123_b-i";
+  let cloudinaryRequest;
+  globalThis.fetch = async (input, init = {}) => {
+    cloudinaryRequest = { url: String(input), init };
+    return new Response(JSON.stringify({ result: "ok" }), { status: 200 });
+  };
+  const request = (id, password = mockEnv.UPLOAD_PASSWORD) => new Request("https://worker.example/api/images", {
+    method: "DELETE",
+    headers: { "X-Upload-Password": password, Origin: mockEnv.ALLOWED_ORIGIN, "Content-Type": "application/json" },
+    body: JSON.stringify({ publicId: id })
+  });
+  try {
+    const denied = await worker.fetch(request(publicId, "wrong-password"), mockEnv);
+    assert.equal(denied.status, 401);
+    assert.equal(cloudinaryRequest, undefined);
+
+    const invalid = await worker.fetch(request("other-library/asset-id"), mockEnv);
+    assert.equal(invalid.status, 400);
+    assert.equal(cloudinaryRequest, undefined);
+
+    const response = await worker.fetch(request(publicId), mockEnv);
+    const data = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(data, { deleted: true });
+    assert.equal(cloudinaryRequest.url, "https://api.cloudinary.com/v1_1/test-cloud/image/destroy");
+    assert.equal(cloudinaryRequest.init.method, "POST");
+    const form = cloudinaryRequest.init.body;
+    assert.equal(form.get("public_id"), publicId);
+    assert.equal(form.get("invalidate"), "true");
+    assert.equal(form.get("api_key"), mockEnv.CLOUDINARY_API_KEY);
+    const timestamp = form.get("timestamp");
+    const source = `invalidate=true&public_id=${publicId}&timestamp=${timestamp}${mockEnv.CLOUDINARY_API_SECRET}`;
+    assert.equal(form.get("signature"), createHash("sha1").update(source).digest("hex"));
+    assert.match(response.headers.get("Access-Control-Allow-Methods"), /DELETE/);
+  } finally { globalThis.fetch = previousFetch; }
 });
