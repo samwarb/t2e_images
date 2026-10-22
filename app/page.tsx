@@ -4,11 +4,11 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type Picture = {
   id: string; name: string; plu: string; sector: string; filename: string;
-  bytes: number; cleaned: boolean; createdAt: string; url: string;
+  bytes: number; cleaned: boolean; generated?: boolean; createdAt: string; url: string;
 };
 type ListResult = { images?: Picture[]; nextCursor?: string | null; error?: string };
 type Dialog = "login" | "upload" | null;
-const defaults = ["Business & Industry", "Education", "Healthcare", "Defence", "Sports & Leisure", "Travel", "Other"];
+const sectors = ["B&I", "Chartwells", "Compass One", "Levy", "RA", "Ireland"];
 const API_URL = process.env.NEXT_PUBLIC_T2E_API_URL || "";
 function api(path: string): string { return API_URL.replace(/\/$/, "") + path; }
 
@@ -32,6 +32,8 @@ export default function Home() {
   const [name, setName] = useState("");
   const [plu, setPlu] = useState("");
   const [sector, setSector] = useState("");
+  const [creationMode, setCreationMode] = useState<"upload" | "generate">("upload");
+  const [description, setDescription] = useState("");
   const [cleanup, setCleanup] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [formError, setFormError] = useState("");
@@ -71,7 +73,7 @@ export default function Home() {
   const groups = useMemo(() => {
     const counter = new Map<string, number>();
     images.forEach(image => counter.set(image.sector, (counter.get(image.sector) || 0) + 1));
-    return [...counter.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    return sectors.map(value => [value, counter.get(value) || 0] as [string, number]);
   }, [images]);
 
   const visible = useMemo(() => {
@@ -110,19 +112,22 @@ export default function Home() {
 
   function resetForm() {
     setFile(null); setPreview(""); setName(""); setPlu(""); setSector("");
-    setCleanup(false); setFormError("");
+    setCreationMode("upload"); setDescription(""); setCleanup(false); setFormError("");
   }
 
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!file) { setFormError("Select an image first."); return; }
+    if (creationMode === "upload" && !file) { setFormError("Select an image first."); return; }
+    if (creationMode === "generate" && description.trim().length < 3) { setFormError("Describe the image you want to create."); return; }
     setUploading(true); setFormError("");
     try {
       const form = new FormData();
-      form.append("image", file);
+      if (creationMode === "upload" && file) form.append("image", file);
       form.append("name", name);
       form.append("plu", plu);
       form.append("sector", sector);
+      form.append("mode", creationMode);
+      if (creationMode === "generate") form.append("description", description.trim());
       form.append("cleanup", String(cleanup));
       const response = await fetch(api("/api/images"), { method: "POST", headers: { "X-Upload-Password": uploadPassword }, body: form });
       const data = await response.json() as { image?: Picture; error?: string };
@@ -141,8 +146,7 @@ export default function Home() {
     } catch { notify("Clipboard unavailable. Open the image and copy the address."); }
   }
 
-  const suggestedSectors = Array.from(new Set([...defaults, ...groups.map(([value]) => value)]));
-  const enhanced = images.filter(image => image.cleaned).length;
+  const enhanced = images.filter(image => image.cleaned || image.generated).length;
 
   return (
     <div className="app-shell">
@@ -164,7 +168,7 @@ export default function Home() {
           <div className="hero-copy">
             <div className="eyebrow"><span className="eyebrow-dot" /> YOUR CREATIVE WORKSPACE</div>
             <h1>Every image.<br /><em>One place.</em></h1>
-            <p>Keep your food and product imagery beautifully organised. Improve photos with optional AI cleanup and share links in a click.</p>
+            <p>Keep your food and product imagery beautifully organised. Clean up a photo or create one with AI, all in a consistent menu-ready style.</p>
             <button type="button" className="hero-button" onClick={openUpload}><span aria-hidden="true">＋</span> Add a new image <span aria-hidden="true">↗</span></button>
           </div>
           <div className="hero-art" aria-hidden="true">
@@ -200,7 +204,7 @@ export default function Home() {
                 {/* Remote Cloudinary URLs are served directly, so a regular img is intentional. */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={image.url} alt={image.name} loading="lazy" />
-                {image.cleaned && <span className="ai-label">✦ AI cleaned</span>}
+                {(image.cleaned || image.generated) && <span className="ai-label">✦ {image.generated ? "AI generated" : "AI cleaned"}</span>}
               </a>
               <div className="image-info"><div className="image-meta">{image.sector}</div><h3 title={image.name}>{image.name}</h3>
                 <div className="image-detail"><span>PLU <b>{image.plu}</b></span><span>{new Date(image.createdAt).toLocaleDateString("en-GB", {day:"numeric",month:"short",year:"numeric"})}</span></div>
@@ -219,7 +223,7 @@ export default function Home() {
       {toast && <div className="toast" role="status">✓ {toast}</div>}
 
       {dialog && <div className="modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget && !uploading) setDialog(null); }}>
-        <section className="modal" role="dialog" aria-modal="true" aria-label={dialog === "login" ? "Uploader sign in" : "Upload a new image"}>
+          <section className="modal" role="dialog" aria-modal="true" aria-label={dialog === "login" ? "Uploader sign in" : "Add an image"}>
           <button type="button" className="modal-close" disabled={uploading} onClick={() => setDialog(null)} aria-label="Close dialog">×</button>
           {dialog === "login" ? <form onSubmit={login}>
             <div className="modal-icon">◇</div><div className="section-eyebrow">SECURE ACCESS</div><h2>Uploader sign in</h2>
@@ -229,20 +233,30 @@ export default function Home() {
             {formError && <p className="form-error" role="alert">{formError}</p>}
             <button type="submit" className="primary-button full" disabled={signingIn}>{signingIn ? "Signing in..." : "Unlock uploads →"}</button>
           </form> : <form onSubmit={upload}>
-            <div className="section-eyebrow">GROW THE LIBRARY</div><h2>Upload a new image</h2><p className="modal-intro">Give your asset a name, PLU and sector so it can be found and shared.</p>
-            <label htmlFor="image-file" className={preview ? "file-drop has-preview" : "file-drop"}>
-              {preview ? <><img src={preview} alt="Selected image preview" /><span>Change image</span></> : <><span className="file-symbol">⇧</span><strong>Click to choose an image</strong><small>JPG, PNG or WebP · Max 8 MB</small></>}
-            </label>
-            <input id="image-file" className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" required={!file} onChange={event => setFile(event.target.files?.[0] || null)} />
+            <div className="section-eyebrow">GROW THE LIBRARY</div><h2>Add an image</h2><p className="modal-intro">Upload a photo for AI cleanup, or create a new image from a description. Both AI options follow the same menu-photo style.</p>
+            <div className="creation-modes" role="group" aria-label="Choose how to add an image">
+              <button type="button" className={creationMode === "upload" ? "creation-mode active" : "creation-mode"} aria-pressed={creationMode === "upload"} onClick={() => { setCreationMode("upload"); setFormError(""); }}>Upload &amp; clean up</button>
+              <button type="button" className={creationMode === "generate" ? "creation-mode active" : "creation-mode"} aria-pressed={creationMode === "generate"} onClick={() => { setCreationMode("generate"); setFormError(""); }}>Generate with AI</button>
+            </div>
+            {creationMode === "upload" ? <>
+              <label htmlFor="image-file" className={preview ? "file-drop has-preview" : "file-drop"}>
+                {preview ? <><img src={preview} alt="Selected image preview" /><span>Change image</span></> : <><span className="file-symbol">⇧</span><strong>Click to choose an image</strong><small>JPG, PNG or WebP · Max 8 MB</small></>}
+              </label>
+              <input id="image-file" className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" required={creationMode === "upload" && !file} onChange={event => setFile(event.target.files?.[0] || null)} />
+            </> : <div className="description-field">
+              <label className="form-label" htmlFor="image-description">Describe the image you want <b>*</b></label>
+              <textarea id="image-description" className="field description-input" value={description} onChange={event => setDescription(event.target.value)} placeholder="e.g. Roasted vegetable and quinoa bowl with feta, chickpeas and fresh rocket" maxLength={1000} minLength={3} required={creationMode === "generate"} />
+              <p className="style-note">✦ We’ll use the same warm, natural menu-photo look for every image. Low-quality AI generation is billed to your OpenAI API account.</p>
+            </div>}
             <div className="form-grid">
               <div><label className="form-label" htmlFor="asset-name">Image name <b>*</b></label><input id="asset-name" className="field" value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Vegan chilli" maxLength={80} required minLength={2}/></div>
               <div><label className="form-label" htmlFor="asset-plu">PLU <b>*</b></label><input id="asset-plu" className="field" value={plu} onChange={event => setPlu(event.target.value)} placeholder="e.g. 001234" maxLength={32} pattern="[a-zA-Z0-9-]+" required/></div>
-              <div className="span-2"><label className="form-label" htmlFor="asset-sector">Sector <b>*</b></label><input id="asset-sector" className="field" list="sectors" value={sector} onChange={event => setSector(event.target.value)} placeholder="Choose or type a sector" maxLength={60} minLength={2} required/><datalist id="sectors">{suggestedSectors.map(value => <option key={value} value={value}/>)}</datalist></div>
+              <div className="span-2"><label className="form-label" htmlFor="asset-sector">Sector <b>*</b></label><select id="asset-sector" className="field" value={sector} onChange={event => setSector(event.target.value)} required><option value="" disabled>Select a sector</option>{sectors.map(value => <option key={value} value={value}>{value}</option>)}</select></div>
             </div>
-            <label className="enhance-choice"><input type="checkbox" checked={cleanup} onChange={event => setCleanup(event.target.checked)} /><span className="enhance-icon">✦</span><span><strong>Clean up with AI</strong><small>Improve lighting and presentation using OpenAI low-quality image editing (charged to your OpenAI API account). AI edits may alter details; review the result.</small></span></label>
-            {name && plu && sector && <div className="filename-hint">Filename: {name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") + "_" + plu.toLowerCase() + "_" + sector.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") + (cleanup ? ".webp" : file?.type === "image/png" ? ".png" : file?.type === "image/webp" ? ".webp" : ".jpg")}</div>}
+            {creationMode === "upload" && <label className="enhance-choice"><input type="checkbox" checked={cleanup} onChange={event => setCleanup(event.target.checked)} /><span className="enhance-icon">✦</span><span><strong>Clean up with AI</strong><small>Match the shared menu-photo style while preserving the food and key details. Low-quality AI editing is billed to your OpenAI API account; review edited images for accuracy.</small></span></label>}
+            {name && plu && sector && <div className="filename-hint">Filename: {name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") + "_" + plu.toLowerCase() + "_" + sector.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"") + (creationMode === "generate" || cleanup ? ".webp" : file?.type === "image/png" ? ".png" : file?.type === "image/webp" ? ".webp" : ".jpg")}</div>}
             {formError && <p className="form-error" role="alert">{formError}</p>}
-            <div className="modal-actions"><button className="secondary-button" disabled={uploading} type="button" onClick={() => setDialog(null)}>Cancel</button><button className="primary-button" type="submit" disabled={uploading || !file}>{uploading ? (cleanup ? "Cleaning and uploading..." : "Uploading...") : "Upload image →"}</button></div>
+            <div className="modal-actions"><button className="secondary-button" disabled={uploading} type="button" onClick={() => setDialog(null)}>Cancel</button><button className="primary-button" type="submit" disabled={uploading || (creationMode === "upload" && !file) || (creationMode === "generate" && description.trim().length < 3)}>{uploading ? (creationMode === "generate" ? "Generating and uploading..." : cleanup ? "Cleaning and uploading..." : "Uploading...") : creationMode === "generate" ? "Generate image →" : cleanup ? "Clean up & upload →" : "Upload image →"}</button></div>
           </form>}
         </section>
       </div>}

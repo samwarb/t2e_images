@@ -1,13 +1,13 @@
-# T2E Image Library — GitHub Pages + Cloudinary + OpenAI AI cleanup
+# T2E Image Library — GitHub Pages + Cloudinary + OpenAI image AI
 
-A static web app for catering product images. Each upload requires **Name**, **PLU**, and **Sector**. Images are saved with `name_PLU_sector.ext` filenames, organised by sector, searchable and individually shareable using **Copy URL Link**.
+A static web app for catering product images. Each image requires **Name**, **PLU**, and one of six **Sectors**: B&I, Chartwells, Compass One, Levy, RA, or Ireland. Images are saved with `name_PLU_sector.ext` filenames, organised by sector, searchable and individually shareable using **Copy URL Link**.
 
-**AI cleanup is already implemented.** Tick *Clean up with AI* before upload. The Cloudflare Worker calls OpenAI's image edit endpoint with `gpt-image-2.5-sunburst`, `quality=low`, `size=1024x1024`, and WebP output, then sends the result to Cloudinary. OpenAI API usage is billed separately from ChatGPT and depends on image and text tokens. Sunburst is the current model configured for precise editing; the older `gpt-image-1-mini` model is scheduled for removal on 1 December 2026.
+The add-image form offers regular upload, optional **Clean up with AI**, and **Generate with AI** from a description. The Cloudflare Worker calls OpenAI's image edit or generation endpoint with `gpt-image-2.5-sunburst`, `quality=low`, `size=1024x1024`, and WebP output, then saves the result to Cloudinary. Both AI operations use one shared photographic direction based on the reference image: close, slightly overhead menu photography, warm natural light, a pale stone background, neutral speckled ceramic serving ware, and realistic food texture. OpenAI API usage is billed separately from ChatGPT; both cleanup and generation incur API usage charges.
 
 ## Architecture
 
 - **GitHub Pages:** statically exported Next.js gallery (no database/server on Pages).
-- **Cloudinary (Free plan):** image CDN and contextual metadata (Name, PLU, Sector, AI cleaned); Cloudinary Admin API serves as catalogue. Image IDs include UUID folder paths to avoid collisions but URLs end in `name_PLU_sector.ext`.
+- **Cloudinary (Free plan):** image CDN and contextual metadata (Name, PLU, Sector, AI cleaned, AI generated); Cloudinary Admin API serves as catalogue. Image IDs include UUID folder paths to avoid collisions but URLs end in `name_PLU_sector.ext`.
 - **Cloudflare Workers (Free plan):** public listing, password-protected upload API and confidential OpenAI/Cloudinary credentials.
 - **OpenAI API:** optional low-quality GPT Image 2.5 Sunburst editing. Requires an API key, API billing/credits, and may require API organization verification. No keys are stored in this repository or sent to the browser.
 
@@ -51,7 +51,7 @@ Cloudinary's free plan currently includes 25 credits per month across storage, t
    
    **https://samwarb.github.io/t2e_images/**
 
-5. Open the site and upload a small test JPG with a Name, PLU and Sector. Tick **Clean up with AI** to test the paid OpenAI path. The output is stored in Cloudinary; Copy URL Link copies its actual CDN URL.
+5. Open the site and choose one of the six sectors. Upload a photo and optionally tick **Clean up with AI**, or choose **Generate with AI** and describe the image. The output is stored in Cloudinary; Copy URL Link copies its actual CDN URL. Both AI actions use the paid OpenAI API.
 
 The app loads and stores the upload password **only in the tab memory**. A refresh or new tab requires signing in again. For production/team-wide use, upgrade to individual identities and rate limiting; the shared password is intended only for a small initial prototype.
 

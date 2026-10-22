@@ -3,6 +3,8 @@
 const MAX_UPLOAD = 8 * 1024 * 1024;
 const PREFIX = "t2e-library/";
 const RESPONSE_HEADERS = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
+const SECTORS = new Set(["B&I", "Chartwells", "Compass One", "Levy", "RA", "Ireland"]);
+const STYLE_GUIDE = "Use a consistent, photorealistic catering menu style inspired by a colorful grain bowl photographed close-up from a slightly overhead angle: a simple off-white speckled ceramic bowl or plate when appropriate, a pale warm stone surface, soft diffused natural daylight, warm neutral tones, crisp authentic food texture, subtle shadows, and minimal clutter. Keep the food as the focus. No added text, labels, logos, or decorative props.";
 
 function originHeaders(request, env) {
   const origin = request.headers.get("Origin");
@@ -29,7 +31,7 @@ function slug(value) {
 function validate(name, plu, sector) {
   if (name.length < 2 || name.length > 80 || !slug(name)) return "Enter a valid image name (2–80 characters).";
   if (!/^[a-z0-9-]{1,32}$/i.test(plu)) return "PLU must be 1–32 letters, numbers or hyphens.";
-  if (sector.length < 2 || sector.length > 60 || !slug(sector)) return "Enter a valid sector (2–60 characters).";
+  if (!SECTORS.has(sector)) return "Choose one of the available sectors.";
   return null;
 }
 function imageMime(bytes) {
@@ -84,6 +86,7 @@ async function catalogue(request, env) {
       name, plu, sector, filename: original + "." + (asset.format || "jpg"),
       bytes: asset.bytes || 0,
       cleaned: c.cleaned === "yes",
+      generated: c.generated === "yes",
       createdAt: asset.created_at || new Date().toISOString(),
       url: asset.secure_url
     };
@@ -92,25 +95,17 @@ async function catalogue(request, env) {
   return json(request, env, { images, nextCursor: payload.next_cursor || null }, 200, { "Cache-Control": "public, max-age=30" });
 }
 
-async function enhance(source, mime, env) {
-  if (!env.OPENAI_API_KEY) throw new Error("AI cleanup is not configured. Ask the administrator to add the OpenAI API key.");
-  const form = new FormData();
-  form.append("model", env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst");
-  form.append("quality", "low");
-  form.append("size", "1024x1024");
-  form.append("n", "1");
-  form.append("output_format", "webp");
-  form.append("image", source, "original." + extension(mime));
-  form.append("prompt", "Retouch this genuine food or catering product photograph for a professional menu catalogue. Improve lighting, clarity, neutral colour balance, framing and background cleanliness. Keep the exact existing food, ingredients, portion size, packaging, labels and branding unchanged. Remove only unwanted visual clutter. Do not invent or add food, garnishes, text, brand marks, props or ingredients.");
+async function imageFromOpenAI(form, action, env) {
+  if (!env.OPENAI_API_KEY) throw new Error("OpenAI image generation is not configured. Ask the administrator to add the OpenAI API key.");
   let response;
   try {
-    response = await fetch("https://api.openai.com/v1/images/edits", {
+    response = await fetch("https://api.openai.com/v1/images/" + (action === "generate" ? "generations" : "edits"), {
       method: "POST", headers: { Authorization: "Bearer " + env.OPENAI_API_KEY }, body: form
     });
   } catch { throw new Error("Unable to reach OpenAI. Please try again."); }
   if (!response.ok) {
-    console.error("OpenAI edit error", response.status);
-    throw new Error("OpenAI cleanup failed (" + response.status + "). No image has been uploaded.");
+    console.error("OpenAI image " + action + " error", response.status);
+    throw new Error("OpenAI image " + (action === "generate" ? "generation" : "cleanup") + " failed (" + response.status + "). No image has been uploaded.");
   }
   const result = await response.json();
   const base64 = result?.data?.[0]?.b64_json;
@@ -120,6 +115,27 @@ async function enhance(source, mime, env) {
   for (let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i);
   if (imageMime(bytes) !== "image/webp") throw new Error("OpenAI returned an unexpected image format.");
   return new Blob([bytes], { type: "image/webp" });
+}
+async function enhance(source, mime, env) {
+  const form = new FormData();
+  form.append("model", env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst");
+  form.append("quality", "low");
+  form.append("size", "1024x1024");
+  form.append("n", "1");
+  form.append("output_format", "webp");
+  form.append("image", source, "original." + extension(mime));
+  form.append("prompt", "Retouch this existing food or catering product photograph into a polished professional menu-catalogue image. Preserve the exact food, ingredients, portion size, packaging, labels, branding, and key subject. Apply this consistent photographic style: " + STYLE_GUIDE + " Improve lighting, clarity, neutral colour balance, framing, and background cleanliness. Keep the original serving vessel when one is present. Remove only unwanted visual clutter; do not invent or remove food, ingredients, text, brand marks, or packaging details.");
+  return imageFromOpenAI(form, "cleanup", env);
+}
+async function generate(description, env) {
+  const form = new FormData();
+  form.append("model", env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst");
+  form.append("quality", "low");
+  form.append("size", "1024x1024");
+  form.append("n", "1");
+  form.append("output_format", "webp");
+  form.append("prompt", "Create one realistic, appetising catering menu-catalogue photograph showing: " + description + ". Follow these visual directions: " + STYLE_GUIDE + " Keep the requested food recognizable and plausible, with no text, labels, logos, or extra props.");
+  return imageFromOpenAI(form, "generate", env);
 }
 async function addImage(request, env) {
   const candidate = request.headers.get("X-Upload-Password") || "";
@@ -133,28 +149,39 @@ async function addImage(request, env) {
   const name = tidy(form.get("name"), 81);
   const plu = tidy(form.get("plu"), 33);
   const sector = tidy(form.get("sector"), 61);
+  const mode = tidy(form.get("mode"), 16) || "upload";
+  const description = tidy(form.get("description"), 1001);
   const failure = validate(name, plu, sector);
   if (failure) return err(request, env, 400, failure);
+  if (mode !== "upload" && mode !== "generate") return err(request, env, 400, "Choose upload or AI generation.");
 
-  const source = form.get("image");
-  if (!(source instanceof File) || source.size < 1 || source.size > MAX_UPLOAD)
-    return err(request, env, 400, "Select a valid JPG, PNG or WebP image smaller than 8 MB.");
-  const signature = new Uint8Array(await source.slice(0, 16).arrayBuffer());
-  const mime = imageMime(signature);
-  if (!mime || source.type !== mime) return err(request, env, 400, "Unsupported image format.");
-
-  const cleaned = form.get("cleanup") === "true";
-  let blob = source;
-  let resultMime = mime;
-  if (cleaned) {
-    try { blob = await enhance(source, mime, env); resultMime = "image/webp"; }
-    catch (error) { return err(request, env, 502, error instanceof Error ? error.message : "AI cleanup failed."); }
+  const generated = mode === "generate";
+  const cleaned = !generated && form.get("cleanup") === "true";
+  let blob;
+  let resultMime;
+  if (generated) {
+    if (description.length < 3 || description.length > 1000) return err(request, env, 400, "Describe the image in 3–1000 characters.");
+    try { blob = await generate(description, env); resultMime = "image/webp"; }
+    catch (error) { return err(request, env, 502, error instanceof Error ? error.message : "AI image generation failed."); }
+  } else {
+    const source = form.get("image");
+    if (!(source instanceof File) || source.size < 1 || source.size > MAX_UPLOAD)
+      return err(request, env, 400, "Select a valid JPG, PNG or WebP image smaller than 8 MB.");
+    const signature = new Uint8Array(await source.slice(0, 16).arrayBuffer());
+    const mime = imageMime(signature);
+    if (!mime || source.type !== mime) return err(request, env, 400, "Unsupported image format.");
+    blob = source;
+    resultMime = mime;
+    if (cleaned) {
+      try { blob = await enhance(source, mime, env); resultMime = "image/webp"; }
+      catch (error) { return err(request, env, 502, error instanceof Error ? error.message : "AI cleanup failed."); }
+    }
   }
 
   const filename = filenameFor(name, plu, sector, resultMime);
   const id = crypto.randomUUID();
   const publicId = PREFIX + id + "/" + filename.slice(0, -(extension(resultMime).length + 1));
-  const context = "name=" + cloudinaryContext(name) + "|plu=" + cloudinaryContext(plu) + "|sector=" + cloudinaryContext(sector) + "|cleaned=" + (cleaned ? "yes" : "no");
+  const context = "name=" + cloudinaryContext(name) + "|plu=" + cloudinaryContext(plu) + "|sector=" + cloudinaryContext(sector) + "|cleaned=" + (cleaned ? "yes" : "no") + "|generated=" + (generated ? "yes" : "no");
   const timestamp = String(Math.floor(Date.now()/1000));
   const unsigned = { context, public_id: publicId, timestamp };
   const stringToSign = Object.entries(unsigned).sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => k + "=" + v).join("&");
@@ -176,7 +203,7 @@ async function addImage(request, env) {
   if (typeof saved.secure_url !== "string") return err(request, env, 502, "Storage provider did not return an image URL.");
   return json(request, env, {
     image: { id: saved.asset_id || id, name, plu, sector, filename, bytes: saved.bytes || blob.size,
-      cleaned, createdAt: saved.created_at || new Date().toISOString(), url: saved.secure_url }
+      cleaned, generated, createdAt: saved.created_at || new Date().toISOString(), url: saved.secure_url }
   }, 201);
 }
 
