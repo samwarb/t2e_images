@@ -2,14 +2,14 @@
 
 A static web app for catering product images. Each upload requires **Name**, **PLU**, and **Sector**. Images are saved with `name_PLU_sector.ext` filenames, organised by sector, searchable and individually shareable using **Copy URL Link**.
 
-**AI cleanup is already implemented** in the initial version. Tick *Clean up with AI* before upload. The Cloudflare Worker calls OpenAI's images/edits endpoint with `gpt-image-1-mini`, `quality=low`, `size=1024x1024`, and WebP output, then sends the result to Cloudinary. OpenAI API fees apply to input tokens and image output. As of Oct 2026, the mini model is deprecated, so the model may need changing when it is retired.
+**AI cleanup is already implemented.** Tick *Clean up with AI* before upload. The Cloudflare Worker calls OpenAI's image edit endpoint with `gpt-image-2.5-sunburst`, `quality=low`, `size=1024x1024`, and WebP output, then sends the result to Cloudinary. OpenAI API usage is billed separately from ChatGPT and depends on image and text tokens. Sunburst is the current model configured for precise editing; the older `gpt-image-1-mini` model is scheduled for removal on 1 December 2026.
 
 ## Architecture
 
 - **GitHub Pages:** statically exported Next.js gallery (no database/server on Pages).
 - **Cloudinary (Free plan):** image CDN and contextual metadata (Name, PLU, Sector, AI cleaned); Cloudinary Admin API serves as catalogue. Image IDs include UUID folder paths to avoid collisions but URLs end in `name_PLU_sector.ext`.
 - **Cloudflare Workers (Free plan):** public listing, password-protected upload API and confidential OpenAI/Cloudinary credentials.
-- **OpenAI API:** optional low-quality GPT Image editing. Requires an API key with credit/billing enabled. No keys are stored in this repository or sent to the browser.
+- **OpenAI API:** optional low-quality GPT Image 2.5 Sunburst editing. Requires an API key, API billing/credits, and may require API organization verification. No keys are stored in this repository or sent to the browser.
 
 ## 1. Create a Cloudinary account
 
@@ -34,7 +34,7 @@ Cloudinary's free plan currently includes 25 credits per month across storage, t
    | UPLOAD_PASSWORD | Secret | Your long, unique uploader password (12+ chars) |
    | OPENAI_API_KEY | Secret | Your OpenAI API key |
    | ALLOWED_ORIGIN | Plain text variable | https://samwarb.github.io |
-   | OPENAI_IMAGE_MODEL | Plain text variable | gpt-image-1-mini |
+   | OPENAI_IMAGE_MODEL | Plain text variable | gpt-image-2.5-sunburst |
 
    Worker secrets are hidden by Cloudflare after saving. **Do not send them to me.**
 4. Deploy `worker/index.mjs` using the Cloudflare dashboard editor (copy the entire file into the Worker, save, deploy). Alternatively, from a local checkout authenticated with Cloudflare, run `npx wrangler deploy`; then `npx wrangler secret put CLOUDINARY_CLOUD_NAME`, and repeat for the four other secrets. `wrangler.toml` contains the same worker configuration.

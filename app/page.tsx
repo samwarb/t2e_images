@@ -164,7 +164,7 @@ export default function Home() {
           <div className="hero-copy">
             <div className="eyebrow"><span className="eyebrow-dot" /> YOUR CREATIVE WORKSPACE</div>
             <h1>Every image.<br /><em>One place.</em></h1>
-            <p>Keep your food and product imagery beautifully organised. Improve photos with optional low-cost OpenAI cleanup and share links in a click.</p>
+            <p>Keep your food and product imagery beautifully organised. Improve photos with optional AI cleanup and share links in a click.</p>
             <button type="button" className="hero-button" onClick={openUpload}><span aria-hidden="true">＋</span> Add a new image <span aria-hidden="true">↗</span></button>
           </div>
           <div className="hero-art" aria-hidden="true">

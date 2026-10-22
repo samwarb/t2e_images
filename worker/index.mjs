@@ -95,7 +95,7 @@ async function catalogue(request, env) {
 async function enhance(source, mime, env) {
   if (!env.OPENAI_API_KEY) throw new Error("AI cleanup is not configured. Ask the administrator to add the OpenAI API key.");
   const form = new FormData();
-  form.append("model", env.OPENAI_IMAGE_MODEL || "gpt-image-1-mini");
+  form.append("model", env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst");
   form.append("quality", "low");
   form.append("size", "1024x1024");
   form.append("n", "1");
