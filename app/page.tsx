@@ -214,7 +214,7 @@ export default function Home() {
           {!loading && images.length > 0 && <p className="library-note">Sector counts and search include the images currently loaded. Use Load more for older assets.</p>}
         </section>
       </main>
-      <footer><span>© T2E Image Library</span><span>Built for easy sharing, powered by Google Cloud.</span></footer>
+      <footer><span>© T2E Image Library</span><span>Built for easy sharing with Cloudinary and Cloudflare.</span></footer>
 
       {toast && <div className="toast" role="status">✓ {toast}</div>}
 
