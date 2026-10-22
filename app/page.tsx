@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import BulkUploadDialog from "./BulkUploadDialog";
+import GenerationOverlay from "./GenerationOverlay";
 import type { Picture } from "./library-types";
 
 type ListResult = { images?: Picture[]; nextCursor?: string | null; error?: string };
@@ -302,6 +303,10 @@ export default function Home() {
           </div>}
         </section>
       </div>}
+      {uploading && (creationMode === "generate" || (creationMode === "upload" && cleanup)) && <GenerationOverlay
+        title={creationMode === "generate" ? "Generating image" : "Cleaning up image"}
+        description={creationMode === "generate" ? `Creating ${name || "your new menu image"} in the shared photo style.` : `Improving ${name || "your image"} in the shared photo style.`}
+      />}
     </div>
   );
 }

@@ -2,10 +2,11 @@
 
 import { useMemo, useState } from "react";
 import { fillBulkWorkbook, inspectBulkWorkbook } from "./bulk-workbook";
+import GenerationOverlay from "./GenerationOverlay";
 import type { BulkAnalysis, BulkAssignment, BulkProduct, Picture } from "./library-types";
 
 type ReviewProduct = BulkProduct & { sameSector: Picture[]; otherSectors: Picture[] };
-type Choice = { kind: "use"; image: Picture } | { kind: "generate" } | { kind: "skip" };
+type Choice = { kind: "use"; image: Picture } | { kind: "review"; image: Picture } | { kind: "skip"; image?: Picture };
 type ApiResult = { images?: Picture[]; nextCursor?: string | null; error?: string };
 type Props = {
   apiBase: string;
@@ -17,6 +18,7 @@ type Props = {
 };
 
 function endpoint(base: string, path: string): string { return base.replace(/\/$/, "") + path; }
+const ALL_SECTORS = "All sectors";
 function uniquePictures(pictures: Picture[]): Picture[] {
   const unique = new Map<string, Picture>();
   for (const picture of pictures) {
@@ -34,14 +36,20 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
   const [analysis, setAnalysis] = useState<BulkAnalysis | null>(null);
   const [items, setItems] = useState<ReviewProduct[]>([]);
   const [choices, setChoices] = useState<Record<string, Choice>>({});
+  const [optionsOpen, setOptionsOpen] = useState<Record<string, boolean>>({});
   const [generationDescriptions, setGenerationDescriptions] = useState<Record<string, string>>({});
+  const [bulkUploadFiles, setBulkUploadFiles] = useState<Record<string, File>>({});
+  const [bulkUploadCleanup, setBulkUploadCleanup] = useState<Record<string, boolean>>({});
+  const [newImageSectors, setNewImageSectors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [generatingAll, setGeneratingAll] = useState(false);
   const [generatingIds, setGeneratingIds] = useState<string[]>([]);
+  const [uploadingIds, setUploadingIds] = useState<string[]>([]);
   const [progress, setProgress] = useState<{ current: number; total: number; name: string } | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
   const [itemErrors, setItemErrors] = useState<Record<string, string>>({});
+  const allSectorsSelected = sector === ALL_SECTORS;
 
   const choicesReady = items.length > 0 && items.every(item => {
     const choice = choices[item.id];
@@ -61,9 +69,37 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
     item.sameSector.length === 0 && item.otherSectors.length === 0 &&
     choices[item.id]?.kind !== "skip" && choices[item.id]?.kind !== "use" && item.canGenerate
   );
+  const activeGeneration = items.find(item => generatingIds.includes(item.id));
+  const activeUpload = items.find(item => uploadingIds.includes(item.id));
+
+  function destinationSector(item: ReviewProduct): string {
+    return allSectorsSelected ? newImageSectors[item.id] || "" : sector;
+  }
+
+  function renderDestinationSector(item: ReviewProduct, busy: boolean) {
+    if (!allSectorsSelected) return null;
+    return <div className="bulk-destination-sector">
+      <label className="form-label" htmlFor={`new-image-sector-${item.id}`}>Save new image to sector</label>
+      <select id={`new-image-sector-${item.id}`} className="field" value={newImageSectors[item.id] || ""} disabled={Boolean(generatingAll || busy)} onChange={event => setNewImageSectors(current => ({ ...current, [item.id]: event.target.value }))}>
+        <option value="">Choose a sector</option>
+        {sectors.map(value => <option key={value} value={value}>{value}</option>)}
+      </select>
+    </div>;
+  }
+
+  const canGenerateAll = !allSectorsSelected || missingToGenerate.every(item => Boolean(newImageSectors[item.id]));
 
   function changeChoice(item: ReviewProduct, choice: Choice) {
     setChoices(current => ({ ...current, [item.id]: choice }));
+    setOptionsOpen(current => ({ ...current, [item.id]: false }));
+    setItemErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
+  }
+
+  function toggleAssignment(item: ReviewProduct, image: Picture, assigned: boolean) {
+    setChoices(current => ({
+      ...current,
+      [item.id]: assigned ? { kind: "use", image } : { kind: "skip", image }
+    }));
     setItemErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
   }
 
@@ -89,20 +125,22 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
 
   async function analyze() {
     if (!file || !sector) return;
-    setLoading(true); setError(""); setAnalysis(null); setItems([]); setChoices({}); setItemErrors({});
+    setLoading(true); setError(""); setAnalysis(null); setItems([]); setChoices({}); setOptionsOpen({}); setItemErrors({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({});
     try {
       const workbook = await inspectBulkWorkbook(file);
       const catalog = await loadFullCatalog();
       const review = workbook.products.map(product => {
         const matches = catalog.filter(image => normalizedPlu(image.plu) === normalizedPlu(product.plu));
-        const sameSector = matches.filter(image => image.sector === sector).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-        const otherSectors = matches.filter(image => image.sector !== sector).sort((a, b) => a.sector.localeCompare(b.sector) || b.createdAt.localeCompare(a.createdAt));
+        const sameSector = matches.filter(image => allSectorsSelected || image.sector === sector).sort((a, b) => allSectorsSelected ? a.sector.localeCompare(b.sector) || b.createdAt.localeCompare(a.createdAt) : b.createdAt.localeCompare(a.createdAt));
+        const otherSectors = allSectorsSelected ? [] : matches.filter(image => image.sector !== sector).sort((a, b) => a.sector.localeCompare(b.sector) || b.createdAt.localeCompare(a.createdAt));
         return { ...product, sameSector, otherSectors };
       });
       const initial: Record<string, Choice> = {};
       for (const item of review) {
         if (item.sameSector.length === 1 && item.otherSectors.length === 0)
           initial[item.id] = { kind: "use", image: item.sameSector[0] };
+        else if (item.sameSector.length + item.otherSectors.length === 1)
+          initial[item.id] = { kind: "review", image: item.sameSector[0] || item.otherSectors[0] };
       }
       setAnalysis(workbook); setItems(review); setChoices(initial);
       setGenerationDescriptions(Object.fromEntries(review.map(item => [item.id, item.description])));
@@ -113,15 +151,19 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
 
   async function generateOne(item: ReviewProduct): Promise<void> {
     if (!item.canGenerate || generatingIds.includes(item.id)) return;
+    const imageSector = destinationSector(item);
+    if (!imageSector) {
+      setItemErrors(current => ({ ...current, [item.id]: "Choose a sector for the new image." }));
+      return;
+    }
     setGeneratingIds(current => current.includes(item.id) ? current : [...current, item.id]);
-    setChoices(current => ({ ...current, [item.id]: { kind: "generate" } }));
     setItemErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
     try {
       const body = new FormData();
       body.append("mode", "generate");
       body.append("name", item.name.slice(0, 80));
       body.append("plu", item.plu);
-      body.append("sector", sector);
+      body.append("sector", imageSector);
       body.append("description", (generationDescriptions[item.id] || item.description || item.name).slice(0, 1000));
       const response = await fetch(endpoint(apiBase, "/api/images"), {
         method: "POST", headers: { "X-Upload-Password": uploadPassword }, body
@@ -130,6 +172,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
       if (!response.ok || !data.image) throw new Error(data.error || "Image generation failed.");
       const picture = data.image;
       setChoices(current => ({ ...current, [item.id]: { kind: "use", image: picture } }));
+      setOptionsOpen(current => ({ ...current, [item.id]: false }));
       onImagesAdded([picture]);
       setItemErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
     } catch (cause) {
@@ -139,9 +182,82 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
     }
   }
 
+  async function uploadItemImage(item: ReviewProduct): Promise<void> {
+    const image = bulkUploadFiles[item.id];
+    if (!image || uploadingIds.includes(item.id)) return;
+    const imageSector = destinationSector(item);
+    if (!imageSector) {
+      setItemErrors(current => ({ ...current, [item.id]: "Choose a sector for the uploaded image." }));
+      return;
+    }
+    if (image.size > 8 * 1024 * 1024) {
+      setItemErrors(current => ({ ...current, [item.id]: "Choose an image smaller than 8 MB." }));
+      return;
+    }
+    setUploadingIds(current => current.includes(item.id) ? current : [...current, item.id]);
+    setItemErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
+    try {
+      const body = new FormData();
+      body.append("mode", "upload");
+      body.append("image", image);
+      body.append("name", item.name.slice(0, 80));
+      body.append("plu", item.plu);
+      body.append("sector", imageSector);
+      body.append("cleanup", String(Boolean(bulkUploadCleanup[item.id])));
+      const response = await fetch(endpoint(apiBase, "/api/images"), {
+        method: "POST", headers: { "X-Upload-Password": uploadPassword }, body
+      });
+      const data = await response.json() as { image?: Picture; error?: string };
+      if (!response.ok || !data.image) throw new Error(data.error || "Image upload failed.");
+      const picture = data.image;
+      setChoices(current => ({ ...current, [item.id]: { kind: "use", image: picture } }));
+      setOptionsOpen(current => ({ ...current, [item.id]: false }));
+      setBulkUploadFiles(current => { const next = { ...current }; delete next[item.id]; return next; });
+      setBulkUploadCleanup(current => ({ ...current, [item.id]: false }));
+      onImagesAdded([picture]);
+      setItemErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
+    } catch (cause) {
+      setItemErrors(current => ({ ...current, [item.id]: cause instanceof Error ? cause.message : "Image upload failed." }));
+    } finally {
+      setUploadingIds(current => current.filter(id => id !== item.id));
+    }
+  }
+
+  function renderUploadOption(item: ReviewProduct, busy: boolean) {
+    const selectedFile = bulkUploadFiles[item.id];
+    const uploading = uploadingIds.includes(item.id);
+    const destinationReady = Boolean(destinationSector(item));
+    return <div className="bulk-upload-option">
+      <label className="form-label" htmlFor={`bulk-upload-${item.id}`}>Or upload an image</label>
+      <input id={`bulk-upload-${item.id}`} className="field bulk-upload-file" type="file" accept="image/jpeg,image/png,image/webp" disabled={Boolean(generatingAll || busy)} onChange={event => {
+        const selected = event.target.files?.[0];
+        setBulkUploadFiles(current => {
+          const next = { ...current };
+          if (selected) next[item.id] = selected;
+          else delete next[item.id];
+          return next;
+        });
+        setItemErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
+      }} />
+      <p className="bulk-upload-hint">JPG, PNG or WebP · up to 8 MB</p>
+      {selectedFile && <p className="bulk-upload-filename">Selected: {selectedFile.name}</p>}
+      <label className="bulk-cleanup-choice">
+        <input type="checkbox" checked={Boolean(bulkUploadCleanup[item.id])} disabled={!selectedFile || Boolean(generatingAll || busy)} onChange={event => setBulkUploadCleanup(current => ({ ...current, [item.id]: event.target.checked }))} />
+        <span><b>Clean up with AI</b><small>Match the shared menu-photo style. AI cleanup is billed to the OpenAI API account.</small></span>
+      </label>
+      <button type="button" className="primary-button bulk-upload-submit" disabled={!selectedFile || !destinationReady || Boolean(generatingAll || busy)} onClick={() => void uploadItemImage(item)}>
+        {uploading ? bulkUploadCleanup[item.id] ? "Cleaning up & uploading…" : "Uploading image…" : !destinationReady ? "Choose a destination sector" : bulkUploadCleanup[item.id] ? "Clean up & upload image" : "Upload image"}
+      </button>
+    </div>;
+  }
+
   async function generateAllMissing() {
     const targets = [...missingToGenerate];
     if (!targets.length || generatingAll) return;
+    if (allSectorsSelected && targets.some(item => !newImageSectors[item.id])) {
+      setError("Choose a destination sector for every missing PLU before generating all.");
+      return;
+    }
     setGeneratingAll(true);
     try {
       for (let index = 0; index < targets.length; index++) {
@@ -170,17 +286,17 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
   }
 
   function close() {
-    if (loading || generatingAll || generatingIds.length || downloading) return;
+    if (loading || generatingAll || generatingIds.length || uploadingIds.length || downloading) return;
     onClose();
   }
 
   return (
     <div className="modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}>
       <section className="modal bulk-modal" role="dialog" aria-modal="true" aria-label="Fill image URLs in a bulk workbook">
-        <button type="button" className="modal-close" disabled={loading || generatingAll || downloading} onClick={close} aria-label="Close dialog">×</button>
+        <button type="button" className="modal-close" disabled={loading || generatingAll || downloading || Boolean(generatingIds.length) || Boolean(uploadingIds.length)} onClick={close} aria-label="Close dialog">×</button>
         <div className="section-eyebrow">BULK PORTAL SHEET</div>
         <h2>Fill image URLs</h2>
-        <p className="modal-intro">Choose the sector first. We’ll match PLUs in column N and fill blank Image URL cells in column S. Existing URLs stay untouched, and the workbook is processed in this browser.</p>
+        <p className="modal-intro">Choose the sector first. We’ll match PLUs in column N and fill blank Image URL cells in column S. Previews stay visible as you review; tick the images to include, then assign all URLs and download the workbook.</p>
 
         {!analysis ? <>
           <div className="bulk-setup-grid">
@@ -188,6 +304,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
               <label className="form-label" htmlFor="bulk-sector">Sector <b>*</b></label>
               <select id="bulk-sector" className="field" value={sector} onChange={event => setSector(event.target.value)} disabled={loading}>
                 <option value="" disabled>Select a sector</option>
+                <option value={ALL_SECTORS}>All sectors · search the full catalogue</option>
                 {sectors.map(value => <option key={value} value={value}>{value}</option>)}
               </select>
             </div>
@@ -206,36 +323,87 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
             <span><b>{analysis.preservedUrlRows}</b> existing URLs preserved</span>
             <span><b>{analysis.ignoredBlankPluRows}</b> rows without a PLU ignored</span>
           </div>
-          <p className="bulk-sheet-note">Sheets checked: {analysis.sheets.join(", ")}. Existing images in <b>{sector}</b> are matched automatically when one clear match exists.</p>
-          {missingToGenerate.length > 0 && <div className="bulk-generate-all"><span>{missingToGenerate.length} PLUs have no catalog image. AI generation is billed to the OpenAI API account.</span><button type="button" className="primary-button" disabled={generatingAll} onClick={() => void generateAllMissing()}>{generatingAll ? `Generating ${progress?.current || 1} of ${progress?.total || missingToGenerate.length}…` : `Generate all ${missingToGenerate.length} missing`}</button></div>}
+          <p className="bulk-sheet-note">Sheets checked: {analysis.sheets.join(", ")}. {allSectorsSelected ? <>PLUs are matched across all sectors; choose a destination sector below for any new images.</> : <>Existing images in <b>{sector}</b> are matched automatically when one clear match exists.</>}</p>
+          {missingToGenerate.length > 0 && <div className="bulk-generate-all"><span>{missingToGenerate.length} PLUs have no catalog image. {allSectorsSelected && "Choose a destination sector for each item below. "}AI generation is billed to the OpenAI API account.</span><button type="button" className="primary-button" disabled={generatingAll || !canGenerateAll} onClick={() => void generateAllMissing()}>{generatingAll ? `Generating ${progress?.current || 1} of ${progress?.total || missingToGenerate.length}…` : `Generate all ${missingToGenerate.length} missing`}</button></div>}
 
           <div className="bulk-items" aria-label="PLU match review">
             {items.map(item => {
               const choice = choices[item.id];
-              const busy = generatingIds.includes(item.id);
+              const busy = generatingIds.includes(item.id) || uploadingIds.includes(item.id);
               const errorText = itemErrors[item.id];
+              const candidates = uniquePictures([...item.sameSector, ...item.otherSectors]);
+              const selectedImage = choice?.image;
+              const assigned = choice?.kind === "use";
+              const showOptions = Boolean(optionsOpen[item.id]);
+              const destinationReady = Boolean(destinationSector(item));
               return <article className="bulk-item" key={item.id}>
-                <div className="bulk-item-heading"><div><div className="image-meta">PLU {item.plu}</div><h3>{item.name}</h3><p>{item.rows.length} workbook row{item.rows.length === 1 ? "" : "s"}</p></div><span className={choice?.kind === "use" ? "bulk-status assigned" : choice?.kind === "skip" ? "bulk-status skipped" : "bulk-status review"}>{choice?.kind === "use" ? "URL assigned" : choice?.kind === "skip" ? "Skipped" : busy ? "Generating" : item.sameSector.length || item.otherSectors.length ? "Choose an image" : "No catalog match"}</span></div>
-                {choice?.kind === "use" ? <div className="bulk-selected"><span>Using <b>{choice.image.name}</b> from <b>{choice.image.sector}</b></span><button type="button" className="link-button" onClick={() => { setChoices(current => { const next = { ...current }; delete next[item.id]; return next; }); }}>Change</button>{choice.image.sector !== sector && <small>The existing URL will be used in this workbook; its library sector label remains {choice.image.sector}.</small>}</div>
-                  : choice?.kind === "skip" ? <div className="bulk-selected"><span>This item will remain blank in the downloaded sheet.</span><button type="button" className="link-button" onClick={() => { setChoices(current => { const next = { ...current }; delete next[item.id]; return next; }); }}>Change</button></div>
+                <div className="bulk-item-heading"><div><div className="image-meta">PLU {item.plu}</div><h3>{item.name}</h3><p>{item.rows.length} workbook row{item.rows.length === 1 ? "" : "s"}</p></div><span className={assigned ? "bulk-status assigned" : choice?.kind === "skip" ? "bulk-status skipped" : "bulk-status review"}>{busy ? uploadingIds.includes(item.id) ? bulkUploadCleanup[item.id] ? "Cleaning up" : "Uploading" : "Generating" : assigned ? "URL selected" : choice?.kind === "review" ? "Review image" : choice?.kind === "skip" ? selectedImage ? "Not assigned" : "Skipped" : candidates.length ? "Choose an image" : "No catalog match"}</span></div>
+                {selectedImage ? <>
+                  <div className="bulk-preview-panel">
+                    <div className="bulk-preview-frame">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={selectedImage.url} alt={`Preview of ${selectedImage.name}`} />
+                      {(selectedImage.generated || selectedImage.cleaned) && <span className="bulk-preview-badge">✦ {selectedImage.generated ? "AI generated" : "AI cleaned"}</span>}
+                    </div>
+                    <div className="bulk-preview-details">
+                      <div>
+                        <div className="bulk-preview-label">{selectedImage.generated ? "GENERATED IMAGE PREVIEW" : selectedImage.cleaned ? "AI CLEANUP PREVIEW" : "IMAGE PREVIEW"}</div>
+                        <h4>{selectedImage.name}</h4>
+                        <p>{selectedImage.sector} · PLU {selectedImage.plu}</p>
+                        {selectedImage.sector !== sector && <small className="bulk-preview-note">This URL can be used in the sheet; the library item remains in {selectedImage.sector}.</small>}
+                        {choice?.kind === "review" && <button type="button" className="link-button bulk-skip-match" onClick={() => changeChoice(item, { kind: "skip", image: selectedImage })}>Skip this PLU</button>}
+                      </div>
+                      <label className="bulk-assign-toggle">
+                        <input type="checkbox" checked={Boolean(assigned)} disabled={busy} onChange={event => toggleAssignment(item, selectedImage, event.target.checked)} />
+                        <span><b>Assign this URL</b><small>Fill {item.rows.length} workbook row{item.rows.length === 1 ? "" : "s"}</small></span>
+                      </label>
+                      {(candidates.length > 1 || item.canGenerate) && <button type="button" className="link-button" disabled={busy} onClick={() => setOptionsOpen(current => ({ ...current, [item.id]: !current[item.id] }))}>{showOptions ? "Hide image options" : "Change image or generate another"}</button>}
+                    </div>
+                  </div>
+                  {busy && <p className="bulk-preview-progress">{uploadingIds.includes(item.id) ? bulkUploadCleanup[item.id] ? "Cleaning up and saving the replacement. The current preview stays here until it is ready." : "Uploading the replacement. The current preview stays here until it is ready." : "Generating a replacement. The current preview stays here until it is ready."}</p>}
+                  {showOptions && <div className="bulk-options-panel">
+                    {(item.canGenerate || candidates.length === 0) && renderDestinationSector(item, busy)}
+                    {candidates.length > 0 && <>
+                      <p className="bulk-match-label">Choose a different catalog image for this PLU.</p>
+                      <div className="bulk-candidates">
+                        {candidates.map(image => <button type="button" className={`bulk-candidate${image.id === selectedImage.id ? " selected" : ""}`} key={image.publicId || image.url} disabled={busy} onClick={() => changeChoice(item, { kind: "use", image })}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={image.url} alt="" loading="lazy" />
+                          <span><b>{image.name}</b><small>{image.sector} · PLU {image.plu}</small></span>
+                          <span className="candidate-use">{image.id === selectedImage.id ? "Selected" : "Use URL"}</span>
+                        </button>)}
+                      </div>
+                    </>}
+                    {item.canGenerate && <>
+                      <label className="form-label bulk-description-label" htmlFor={`bulk-description-${item.id}`}>AI image description <span>(starts with the item name from column B)</span></label>
+                      <textarea id={`bulk-description-${item.id}`} className="field bulk-description" maxLength={1000} value={generationDescriptions[item.id] ?? item.description} disabled={Boolean(generatingAll || busy)} onChange={event => setGenerationDescriptions(current => ({ ...current, [item.id]: event.target.value }))} />
+                      <div className="bulk-item-actions"><button type="button" className="bulk-generate-button" disabled={!destinationReady || Boolean(generatingAll || busy) || !(generationDescriptions[item.id] ?? item.description).trim()} onClick={() => void generateOne(item)}>{busy ? "Generating image…" : destinationReady ? `Generate new for ${destinationSector(item)}` : "Choose a sector to generate"}</button></div>
+                    </>}
+                    {candidates.length === 0 && renderUploadOption(item, busy)}
+                  </div>}
+                  {errorText && <p className="form-error" role="alert">{errorText}</p>}
+                </>
+                  : choice?.kind === "skip" ? <div className="bulk-selected"><span>This item will remain blank in the downloaded sheet.</span><button type="button" className="link-button" onClick={() => setChoices(current => { const next = { ...current }; delete next[item.id]; return next; })}>Review again</button></div>
                   : <>
-                    {item.sameSector.length > 1 && <p className="bulk-match-label">Several images match this PLU in {sector}. Choose one, generate a fresh image, or skip.</p>}
-                    {item.sameSector.length === 1 && <p className="bulk-match-label">A matching image is available in {sector}; choose another action if needed.</p>}
+                    {item.sameSector.length > 1 && <p className="bulk-match-label">Several images match this PLU {allSectorsSelected ? "across all sectors" : `in ${sector}`}. Choose one, generate a fresh image, or skip.</p>}
+                    {item.sameSector.length === 1 && <p className="bulk-match-label">A matching image is available in {allSectorsSelected ? "the catalogue" : sector}; choose another action if needed.</p>}
                     {item.otherSectors.length > 0 && <p className="bulk-match-label">This PLU appears in another sector. Preview an existing image to use its URL in this workbook, generate a new image for {sector}, or skip.</p>}
-                    {item.sameSector.length + item.otherSectors.length > 0 && <div className="bulk-candidates">
-                      {uniquePictures([...item.sameSector, ...item.otherSectors]).map(image => <button type="button" className="bulk-candidate" key={image.publicId || image.url} onClick={() => changeChoice(item, { kind: "use", image })}>
+                    {candidates.length > 0 && <div className="bulk-candidates">
+                      {candidates.map(image => <button type="button" className="bulk-candidate" key={image.publicId || image.url} disabled={busy} onClick={() => changeChoice(item, { kind: "use", image })}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={image.url} alt="" loading="lazy" />
                         <span><b>{image.name}</b><small>{image.sector} · PLU {image.plu}</small></span>
                         <span className="candidate-use">Use URL</span>
                       </button>)}
                     </div>}
+                    {(item.canGenerate || candidates.length === 0) && renderDestinationSector(item, busy)}
                     {item.canGenerate ? <>
                       <label className="form-label bulk-description-label" htmlFor={`bulk-description-${item.id}`}>AI image description <span>(starts with the item name from column B)</span></label>
                       <textarea id={`bulk-description-${item.id}`} className="field bulk-description" maxLength={1000} value={generationDescriptions[item.id] ?? item.description} disabled={Boolean(generatingAll || busy)} onChange={event => setGenerationDescriptions(current => ({ ...current, [item.id]: event.target.value }))} />
-                      <div className="bulk-item-actions"><button type="button" className="bulk-generate-button" disabled={Boolean(generatingAll || busy) || !(generationDescriptions[item.id] ?? item.description).trim()} onClick={() => void generateOne(item)}>{busy ? "Generating image…" : errorText ? `Retry generation for ${sector}` : `Generate new for ${sector}`}</button><button type="button" className="link-button" disabled={Boolean(generatingAll || busy)} onClick={() => changeChoice(item, { kind: "skip" })}>Skip</button></div>
+                      <div className="bulk-item-actions"><button type="button" className="bulk-generate-button" disabled={!destinationReady || Boolean(generatingAll || busy) || !(generationDescriptions[item.id] ?? item.description).trim()} onClick={() => void generateOne(item)}>{busy ? "Generating image…" : !destinationReady ? "Choose a sector to generate" : errorText ? `Retry generation for ${destinationSector(item)}` : `Generate new for ${destinationSector(item)}`}</button><button type="button" className="link-button" disabled={Boolean(generatingAll || busy)} onClick={() => changeChoice(item, { kind: "skip" })}>Skip</button></div>
                     </>
                       : <div className="bulk-item-actions"><span className="style-note">No product name is available, so AI generation is unavailable.</span><button type="button" className="link-button" disabled={Boolean(generatingAll || busy)} onClick={() => changeChoice(item, { kind: "skip" })}>Skip</button></div>}
+                    {candidates.length === 0 && renderUploadOption(item, busy)}
                     {errorText && <p className="form-error" role="alert">{errorText}</p>}
                   </>}
               </article>;
@@ -243,11 +411,20 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
           </div>
           {items.length === 0 && <div className="empty-state bulk-empty"><h3>Nothing needs filling</h3><p>Every PLU row already has an image URL, or there were no PLUs in the workbook.</p></div>}
           {error && <p className="form-error" role="alert">{error}</p>}
-          <div className="bulk-download-summary">{rowsToFill} URL{rowsToFill === 1 ? "" : "s"} ready for {rowsToFill} row{rowsToFill === 1 ? "" : "s"}{unresolvedCount > 0 ? ` · ${unresolvedCount} item${unresolvedCount === 1 ? "" : "s"} need a choice` : " · all items reviewed"}</div>
-          <div className="modal-actions bulk-footer-actions"><button className="secondary-button" type="button" disabled={generatingAll || Boolean(generatingIds.length) || downloading} onClick={() => { setAnalysis(null); setItems([]); setChoices({}); setItemErrors({}); setError(""); }}>Choose another file</button><button className="primary-button" type="button" disabled={!choicesReady || rowsToFill === 0 || downloading || generatingAll || Boolean(generatingIds.length)} onClick={() => void downloadWorkbook()}>{downloading ? "Preparing workbook…" : "Download filled workbook ↓"}</button></div>
+          <div className="bulk-download-summary">{rowsToFill} URL{rowsToFill === 1 ? "" : "s"} selected for {rowsToFill} row{rowsToFill === 1 ? "" : "s"}{unresolvedCount > 0 ? ` · ${unresolvedCount} item${unresolvedCount === 1 ? "" : "s"} need a choice` : " · all items reviewed"}</div>
+          <div className="modal-actions bulk-footer-actions"><button className="secondary-button" type="button" disabled={generatingAll || Boolean(generatingIds.length) || Boolean(uploadingIds.length) || downloading} onClick={() => { setAnalysis(null); setItems([]); setChoices({}); setOptionsOpen({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({}); setItemErrors({}); setError(""); }}>Choose another file</button><button className="primary-button" type="button" disabled={!choicesReady || rowsToFill === 0 || downloading || generatingAll || Boolean(generatingIds.length) || Boolean(uploadingIds.length)} onClick={() => void downloadWorkbook()}>{downloading ? "Preparing workbook…" : "Assign all URLs & download workbook ↓"}</button></div>
           <p className="style-note">Generated image requests run one at a time. Skipped rows and existing URLs are left unchanged.</p>
         </>}
       </section>
+      {activeGeneration && <GenerationOverlay
+        title={generatingAll ? "Generating images" : "Generating image"}
+        description={generatingAll ? `Creating ${progress?.name || activeGeneration.name} in the shared photo style.` : `Creating ${activeGeneration.name} in the shared photo style.`}
+        progress={generatingAll && progress ? { current: progress.current, total: progress.total } : undefined}
+      />}
+      {activeUpload && <GenerationOverlay
+        title={bulkUploadCleanup[activeUpload.id] ? "Cleaning up image" : "Uploading image"}
+        description={bulkUploadCleanup[activeUpload.id] ? `Cleaning up ${activeUpload.name} and saving it to the library.` : `Saving ${activeUpload.name} to the library.`}
+      />}
     </div>
   );
 }
