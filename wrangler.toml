@@ -1,6 +1,7 @@
 name = "t2e-image-api"
 main = "worker/index.mjs"
 compatibility_date = "2026-10-22"
+preview_urls = true
 
 [vars]
 ALLOWED_ORIGIN = "https://samwarb.github.io"
