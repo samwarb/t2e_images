@@ -30,15 +30,39 @@ function uniquePictures(pictures: Picture[]): Picture[] {
   return [...unique.values()];
 }
 function normalizedPlu(value: string): string { return value.trim().toLocaleUpperCase(); }
+function normalizedSearchText(value: string): string {
+  return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase();
+}
+function searchPicturesByKeywords(pictures: Picture[], query: string): Picture[] {
+  const normalizedQuery = normalizedSearchText(query).trim();
+  const keywords = [...new Set(normalizedQuery.split(/[^a-z0-9]+/).filter(word => word.length > 1 || /^\d+$/.test(word)))];
+  if (keywords.length === 0) return [];
+  return pictures.map(image => {
+    const name = normalizedSearchText(image.name + " " + image.filename);
+    const searchable = normalizedSearchText([image.name, image.plu, image.sector, image.filename].join(" "));
+    const matched = keywords.filter(word => searchable.includes(word));
+    if (matched.length === 0) return null;
+    const nameMatches = keywords.filter(word => name.includes(word)).length;
+    const phraseMatch = name.includes(normalizedQuery) ? 1 : 0;
+    return { image, score: matched.length * 10 + nameMatches * 4 + phraseMatch * 6 };
+  }).filter((result): result is { image: Picture; score: number } => result !== null)
+    .sort((a, b) => b.score - a.score || b.image.createdAt.localeCompare(a.image.createdAt))
+    .slice(0, 12)
+    .map(result => result.image);
+}
 
 export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onClose, onImagesAdded, notify }: Props) {
   const [sector, setSector] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<BulkAnalysis | null>(null);
   const [items, setItems] = useState<ReviewProduct[]>([]);
+  const [catalogPictures, setCatalogPictures] = useState<Picture[]>([]);
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
   const [choices, setChoices] = useState<Record<string, Choice>>({});
   const [optionsOpen, setOptionsOpen] = useState<Record<string, boolean>>({});
+  const [keywordSearchOpen, setKeywordSearchOpen] = useState<Record<string, boolean>>({});
+  const [keywordDrafts, setKeywordDrafts] = useState<Record<string, string>>({});
+  const [keywordSearches, setKeywordSearches] = useState<Record<string, string>>({});
   const [generationDescriptions, setGenerationDescriptions] = useState<Record<string, string>>({});
   const [bulkUploadFiles, setBulkUploadFiles] = useState<Record<string, File>>({});
   const [bulkUploadCleanup, setBulkUploadCleanup] = useState<Record<string, boolean>>({});
@@ -111,6 +135,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
   function changeChoice(item: ReviewProduct, choice: Choice) {
     setChoices(current => ({ ...current, [item.id]: choice }));
     setOptionsOpen(current => ({ ...current, [item.id]: false }));
+    setKeywordSearchOpen(current => ({ ...current, [item.id]: false }));
     setItemErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
   }
 
@@ -120,6 +145,45 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
       [item.id]: assigned ? { kind: "use", image } : { kind: "skip", image }
     }));
     setItemErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
+  }
+
+  function runKeywordSearch(item: ReviewProduct) {
+    const query = (keywordDrafts[item.id] ?? item.name).trim();
+    if (query.length < 2) return;
+    setKeywordSearches(current => ({ ...current, [item.id]: query }));
+  }
+
+  function renderKeywordSearch(item: ReviewProduct, busy: boolean) {
+    const open = Boolean(keywordSearchOpen[item.id]);
+    const draft = keywordDrafts[item.id] ?? item.name;
+    const query = keywordSearches[item.id] || "";
+    const results = open && query ? searchPicturesByKeywords(catalogPictures, query) : [];
+    return <div className="bulk-keyword-search">
+      <button type="button" className="link-button" aria-expanded={open} disabled={busy} onClick={() => setKeywordSearchOpen(current => ({ ...current, [item.id]: !current[item.id] }))}>
+        {open ? "Hide catalogue search" : "Search catalogue by keywords"}
+      </button>
+      {open && <>
+        <label className="form-label" htmlFor={`bulk-keyword-${item.id}`}>Search by item name, keywords or PLU</label>
+        <div className="bulk-keyword-search-form">
+          <input id={`bulk-keyword-${item.id}`} className="field" type="search" value={draft} placeholder="For example, chicken wrap" disabled={Boolean(generatingAll || busy)} onChange={event => {
+            const value = event.target.value;
+            setKeywordDrafts(current => ({ ...current, [item.id]: value }));
+            setKeywordSearches(current => { const next = { ...current }; delete next[item.id]; return next; });
+          }} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); runKeywordSearch(item); } }} />
+          <button type="button" className="secondary-button" disabled={Boolean(generatingAll || busy) || draft.trim().length < 2} onClick={() => runKeywordSearch(item)}>Search</button>
+        </div>
+        <p className="bulk-keyword-hint">Searches names and PLUs across all sectors. Choose a result to preview it and use its URL for workbook PLU {item.plu}.</p>
+        {query && results.length > 0 && <div className="bulk-candidates" aria-label={`Catalogue results for ${query}`}>
+          {results.map(image => <button type="button" className="bulk-candidate" key={image.publicId || image.url} disabled={busy} onClick={() => changeChoice(item, { kind: "use", image })}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={image.url} alt={`Preview of ${image.name}`} loading="lazy" />
+            <span><b>{image.name}</b><small>{image.sector} · PLU {image.plu}</small></span>
+            <span className="candidate-use">Use URL</span>
+          </button>)}
+        </div>}
+        {query && results.length === 0 && <p className="bulk-keyword-empty">No catalogue images matched those keywords. Try fewer or different terms.</p>}
+      </>}
+    </div>;
   }
 
   async function loadFullCatalog(): Promise<Picture[]> {
@@ -144,10 +208,11 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
 
   async function analyze() {
     if (!file || !sector) return;
-    setLoading(true); setError(""); setAnalysis(null); setItems([]); setChoices({}); setReviewFilter("all"); setOptionsOpen({}); setItemErrors({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({});
+    setLoading(true); setError(""); setAnalysis(null); setItems([]); setCatalogPictures([]); setChoices({}); setReviewFilter("all"); setOptionsOpen({}); setKeywordSearchOpen({}); setKeywordDrafts({}); setKeywordSearches({}); setItemErrors({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({});
     try {
       const workbook = await inspectBulkWorkbook(file);
       const catalog = await loadFullCatalog();
+      setCatalogPictures(catalog);
       const review = workbook.products.map(product => {
         const matches = catalog.filter(image => normalizedPlu(image.plu) === normalizedPlu(product.plu));
         const sameSector = matches.filter(image => allSectorsSelected || image.sector === sector).sort((a, b) => allSectorsSelected ? a.sector.localeCompare(b.sector) || b.createdAt.localeCompare(a.createdAt) : b.createdAt.localeCompare(a.createdAt));
@@ -190,6 +255,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
       const data = await response.json() as { image?: Picture; error?: string };
       if (!response.ok || !data.image) throw new Error(data.error || "Image generation failed.");
       const picture = data.image;
+      setCatalogPictures(current => uniquePictures([picture, ...current]));
       setChoices(current => ({ ...current, [item.id]: { kind: "use", image: picture } }));
       setOptionsOpen(current => ({ ...current, [item.id]: false }));
       onImagesAdded([picture]);
@@ -229,6 +295,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
       const data = await response.json() as { image?: Picture; error?: string };
       if (!response.ok || !data.image) throw new Error(data.error || "Image upload failed.");
       const picture = data.image;
+      setCatalogPictures(current => uniquePictures([picture, ...current]));
       setChoices(current => ({ ...current, [item.id]: { kind: "use", image: picture } }));
       setOptionsOpen(current => ({ ...current, [item.id]: false }));
       setBulkUploadFiles(current => { const next = { ...current }; delete next[item.id]; return next; });
@@ -365,6 +432,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
               const assigned = choice?.kind === "use";
               const showOptions = Boolean(optionsOpen[item.id]);
               const destinationReady = Boolean(destinationSector(item));
+              const needsKeywordSearch = item.sameSector.length === 0;
               return <article className="bulk-item" key={item.id}>
                 <div className="bulk-item-heading"><div><div className="image-meta">PLU {item.plu}</div><h3>{item.name}</h3><p>{item.rows.length} workbook row{item.rows.length === 1 ? "" : "s"}</p></div><span className={assigned ? "bulk-status assigned" : choice?.kind === "skip" ? "bulk-status skipped" : "bulk-status review"}>{busy ? uploadingIds.includes(item.id) ? bulkUploadCleanup[item.id] ? "Cleaning up" : "Uploading" : "Generating" : assigned ? "URL selected" : choice?.kind === "review" ? "Review image" : choice?.kind === "skip" ? selectedImage ? "Not assigned" : "Skipped" : candidates.length ? "Choose an image" : "No catalog match"}</span></div>
                 {selectedImage ? <>
@@ -379,6 +447,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
                         <div className="bulk-preview-label">{selectedImage.generated ? "GENERATED IMAGE PREVIEW" : selectedImage.cleaned ? "AI CLEANUP PREVIEW" : "IMAGE PREVIEW"}</div>
                         <h4>{selectedImage.name}</h4>
                         <p>{selectedImage.sector} · PLU {selectedImage.plu}</p>
+                        {normalizedPlu(selectedImage.plu) !== normalizedPlu(item.plu) && <small className="bulk-preview-note">Catalogue PLU {selectedImage.plu}; this URL will fill workbook PLU {item.plu}.</small>}
                         {selectedImage.sector !== sector && <small className="bulk-preview-note">This URL can be used in the sheet; the library item remains in {selectedImage.sector}.</small>}
                         {choice?.kind === "review" && <button type="button" className="link-button bulk-skip-match" onClick={() => changeChoice(item, { kind: "skip", image: selectedImage })}>Skip this PLU</button>}
                       </div>
@@ -386,12 +455,13 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
                         <input type="checkbox" checked={Boolean(assigned)} disabled={busy} onChange={event => toggleAssignment(item, selectedImage, event.target.checked)} />
                         <span><b>Assign this URL</b><small>Fill {item.rows.length} workbook row{item.rows.length === 1 ? "" : "s"}</small></span>
                       </label>
-                      {(candidates.length > 1 || item.canGenerate) && <button type="button" className="link-button" disabled={busy} onClick={() => setOptionsOpen(current => ({ ...current, [item.id]: !current[item.id] }))}>{showOptions ? "Hide image options" : "Change image or generate another"}</button>}
+                      {(candidates.length > 1 || item.canGenerate || needsKeywordSearch) && <button type="button" className="link-button" disabled={busy} onClick={() => setOptionsOpen(current => ({ ...current, [item.id]: !current[item.id] }))}>{showOptions ? "Hide image options" : needsKeywordSearch ? "Search catalogue or change image" : "Change image or generate another"}</button>}
                     </div>
                   </div>
                   {busy && <p className="bulk-preview-progress">{uploadingIds.includes(item.id) ? bulkUploadCleanup[item.id] ? "Cleaning up and saving the replacement. The current preview stays here until it is ready." : "Uploading the replacement. The current preview stays here until it is ready." : "Generating a replacement. The current preview stays here until it is ready."}</p>}
                   {showOptions && <div className="bulk-options-panel">
                     {(item.canGenerate || candidates.length === 0) && renderDestinationSector(item, busy)}
+                    {needsKeywordSearch && renderKeywordSearch(item, busy)}
                     {candidates.length > 0 && <>
                       <p className="bulk-match-label">Choose a different catalog image for this PLU.</p>
                       <div className="bulk-candidates">
@@ -425,6 +495,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
                         <span className="candidate-use">Use URL</span>
                       </button>)}
                     </div>}
+                    {needsKeywordSearch && renderKeywordSearch(item, busy)}
                     {(item.canGenerate || candidates.length === 0) && renderDestinationSector(item, busy)}
                     {item.canGenerate ? <>
                       <label className="form-label bulk-description-label" htmlFor={`bulk-description-${item.id}`}>AI image description <span>(starts with the item name from column B)</span></label>
