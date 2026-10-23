@@ -60,7 +60,6 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
   const [choices, setChoices] = useState<Record<string, Choice>>({});
   const [optionsOpen, setOptionsOpen] = useState<Record<string, boolean>>({});
-  const [keywordSearchOpen, setKeywordSearchOpen] = useState<Record<string, boolean>>({});
   const [keywordDrafts, setKeywordDrafts] = useState<Record<string, string>>({});
   const [keywordSearches, setKeywordSearches] = useState<Record<string, string>>({});
   const [generationDescriptions, setGenerationDescriptions] = useState<Record<string, string>>({});
@@ -135,7 +134,6 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
   function changeChoice(item: ReviewProduct, choice: Choice) {
     setChoices(current => ({ ...current, [item.id]: choice }));
     setOptionsOpen(current => ({ ...current, [item.id]: false }));
-    setKeywordSearchOpen(current => ({ ...current, [item.id]: false }));
     setItemErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
   }
 
@@ -154,35 +152,29 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
   }
 
   function renderKeywordSearch(item: ReviewProduct, busy: boolean) {
-    const open = Boolean(keywordSearchOpen[item.id]);
     const draft = keywordDrafts[item.id] ?? item.name;
     const query = keywordSearches[item.id] || "";
-    const results = open && query ? searchPicturesByKeywords(catalogPictures, query) : [];
+    const results = query ? searchPicturesByKeywords(catalogPictures, query) : [];
     return <div className="bulk-keyword-search">
-      <button type="button" className="link-button" aria-expanded={open} disabled={busy} onClick={() => setKeywordSearchOpen(current => ({ ...current, [item.id]: !current[item.id] }))}>
-        {open ? "Hide catalogue search" : "Search catalogue by keywords"}
-      </button>
-      {open && <>
-        <label className="form-label" htmlFor={`bulk-keyword-${item.id}`}>Search by item name, keywords or PLU</label>
-        <div className="bulk-keyword-search-form">
-          <input id={`bulk-keyword-${item.id}`} className="field" type="search" value={draft} placeholder="For example, chicken wrap" disabled={Boolean(generatingAll || busy)} onChange={event => {
-            const value = event.target.value;
-            setKeywordDrafts(current => ({ ...current, [item.id]: value }));
-            setKeywordSearches(current => { const next = { ...current }; delete next[item.id]; return next; });
-          }} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); runKeywordSearch(item); } }} />
-          <button type="button" className="secondary-button" disabled={Boolean(generatingAll || busy) || draft.trim().length < 2} onClick={() => runKeywordSearch(item)}>Search</button>
-        </div>
-        <p className="bulk-keyword-hint">Searches names and PLUs across all sectors. Choose a result to preview it and use its URL for workbook PLU {item.plu}.</p>
-        {query && results.length > 0 && <div className="bulk-candidates" aria-label={`Catalogue results for ${query}`}>
-          {results.map(image => <button type="button" className="bulk-candidate" key={image.publicId || image.url} disabled={busy} onClick={() => changeChoice(item, { kind: "use", image })}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={image.url} alt={`Preview of ${image.name}`} loading="lazy" />
-            <span><b>{image.name}</b><small>{image.sector} · PLU {image.plu}</small></span>
-            <span className="candidate-use">Use URL</span>
-          </button>)}
-        </div>}
-        {query && results.length === 0 && <p className="bulk-keyword-empty">No catalogue images matched those keywords. Try fewer or different terms.</p>}
-      </>}
+      <label className="form-label" htmlFor={`bulk-keyword-${item.id}`}>Search catalogue by keywords</label>
+      <div className="bulk-keyword-search-form">
+        <input id={`bulk-keyword-${item.id}`} className="field" type="search" value={draft} placeholder="For example, chicken wrap" disabled={Boolean(generatingAll || busy)} onChange={event => {
+          const value = event.target.value;
+          setKeywordDrafts(current => ({ ...current, [item.id]: value }));
+          setKeywordSearches(current => { const next = { ...current }; delete next[item.id]; return next; });
+        }} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); runKeywordSearch(item); } }} />
+        <button type="button" className="secondary-button" disabled={Boolean(generatingAll || busy) || draft.trim().length < 2} onClick={() => runKeywordSearch(item)}>Search</button>
+      </div>
+      <p className="bulk-keyword-hint">Searches names and PLUs across all sectors. Choose a result to preview it and use its URL for workbook PLU {item.plu}.</p>
+      {query && results.length > 0 && <div className="bulk-candidates" aria-label={`Catalogue results for ${query}`}>
+        {results.map(image => <button type="button" className="bulk-candidate" key={image.publicId || image.url} disabled={busy} onClick={() => changeChoice(item, { kind: "use", image })}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={image.url} alt={`Preview of ${image.name}`} loading="lazy" />
+          <span><b>{image.name}</b><small>{image.sector} · PLU {image.plu}</small></span>
+          <span className="candidate-use">Use URL</span>
+        </button>)}
+      </div>}
+      {query && results.length === 0 && <p className="bulk-keyword-empty">No catalogue images matched those keywords. Try fewer or different terms.</p>}
     </div>;
   }
 
@@ -208,7 +200,7 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
 
   async function analyze() {
     if (!file || !sector) return;
-    setLoading(true); setError(""); setAnalysis(null); setItems([]); setCatalogPictures([]); setChoices({}); setReviewFilter("all"); setOptionsOpen({}); setKeywordSearchOpen({}); setKeywordDrafts({}); setKeywordSearches({}); setItemErrors({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({});
+    setLoading(true); setError(""); setAnalysis(null); setItems([]); setCatalogPictures([]); setChoices({}); setReviewFilter("all"); setOptionsOpen({}); setKeywordDrafts({}); setKeywordSearches({}); setItemErrors({}); setBulkUploadFiles({}); setBulkUploadCleanup({}); setNewImageSectors({});
     try {
       const workbook = await inspectBulkWorkbook(file);
       const catalog = await loadFullCatalog();
@@ -455,13 +447,13 @@ export default function BulkUploadDialog({ apiBase, uploadPassword, sectors, onC
                         <input type="checkbox" checked={Boolean(assigned)} disabled={busy} onChange={event => toggleAssignment(item, selectedImage, event.target.checked)} />
                         <span><b>Assign this URL</b><small>Fill {item.rows.length} workbook row{item.rows.length === 1 ? "" : "s"}</small></span>
                       </label>
-                      {(candidates.length > 1 || item.canGenerate || needsKeywordSearch) && <button type="button" className="link-button" disabled={busy} onClick={() => setOptionsOpen(current => ({ ...current, [item.id]: !current[item.id] }))}>{showOptions ? "Hide image options" : needsKeywordSearch ? "Search catalogue or change image" : "Change image or generate another"}</button>}
+                      {(candidates.length > 1 || item.canGenerate || needsKeywordSearch) && <button type="button" className="link-button" disabled={busy} onClick={() => setOptionsOpen(current => ({ ...current, [item.id]: !current[item.id] }))}>{showOptions ? "Hide image options" : needsKeywordSearch ? "More image options" : "Change image or generate another"}</button>}
                     </div>
                   </div>
                   {busy && <p className="bulk-preview-progress">{uploadingIds.includes(item.id) ? bulkUploadCleanup[item.id] ? "Cleaning up and saving the replacement. The current preview stays here until it is ready." : "Uploading the replacement. The current preview stays here until it is ready." : "Generating a replacement. The current preview stays here until it is ready."}</p>}
+                  {needsKeywordSearch && renderKeywordSearch(item, busy)}
                   {showOptions && <div className="bulk-options-panel">
                     {(item.canGenerate || candidates.length === 0) && renderDestinationSector(item, busy)}
-                    {needsKeywordSearch && renderKeywordSearch(item, busy)}
                     {candidates.length > 0 && <>
                       <p className="bulk-match-label">Choose a different catalog image for this PLU.</p>
                       <div className="bulk-candidates">
